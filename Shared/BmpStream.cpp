@@ -1,7 +1,7 @@
-#include "BmpStream. h"
+#include "..\Shared\BmpStream.h"
 
-// Konstruktor
-BmpStream::BmpStream(int bpp) : 
+// ===== KONSTRUKTOR =====
+BmpStream:: BmpStream(int bpp) : 
     pPrevious(NULL), 
     pCurrent(NULL), 
     pDiff(NULL),
@@ -12,7 +12,7 @@ BmpStream::BmpStream(int bpp) :
         bitsPerPixel = 24;
 }
 
-// Destruktor
+// ===== DESTRUKTOR =====
 BmpStream::~BmpStream()
 {
     if (pPrevious) delete pPrevious;
@@ -20,8 +20,8 @@ BmpStream::~BmpStream()
     if (pDiff) delete pDiff;
 }
 
-// Przechwytuje nowy obraz ekranu
-void BmpStream:: Capture()
+// ===== PRZECHWYTUJE NOWY OBRAZ EKRANU =====
+void BmpStream::Capture()
 {
     // Przesuń current -> previous
     if (pPrevious) delete pPrevious;
@@ -34,7 +34,7 @@ void BmpStream:: Capture()
     
     // Utwórz DC
     HDC hScreenDC = GetDC(NULL);
-    if (!hScreenDC) return;
+    if (! hScreenDC) return;
     
     HDC hMemDC = CreateCompatibleDC(hScreenDC);
     if (!hMemDC)
@@ -51,7 +51,7 @@ void BmpStream:: Capture()
     bmi.bmiHeader.biHeight = -screenHeight;  // ujemna = top-down DIB
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = bitsPerPixel;
-    bmi.bmiHeader. biCompression = BI_RGB;
+    bmi.bmiHeader.biCompression = BI_RGB;
     
     // Utwórz DIB Section (bezpośredni dostęp do pamięci)
     BYTE* pDibData = NULL;
@@ -83,6 +83,7 @@ void BmpStream:: Capture()
     pCurrent->stride = stride;
     pCurrent->dataSize = dataSize;
     pCurrent->pData = new BYTE[dataSize];
+    pCurrent->isFullFrame = true;  // Przechwycony obraz jest zawsze pełny
     
     // Skopiuj dane z DIB Section
     CopyMemory(pCurrent->pData, pDibData, dataSize);
@@ -94,8 +95,8 @@ void BmpStream:: Capture()
     ReleaseDC(NULL, hScreenDC);
 }
 
-// Oblicza różnicę między obrazami
-void BmpStream::CalcDiff()
+// ===== OBLICZA RÓŻNICĘ MIĘDZY OBRAZAMI =====
+void BmpStream:: CalcDiff()
 {
     // Zwolnij starą różnicę
     if (pDiff) 
@@ -116,17 +117,22 @@ void BmpStream::CalcDiff()
     pDiff->dataSize = pCurrent->dataSize;
     pDiff->pData = new BYTE[pCurrent->dataSize];
     
-    // Jeśli nie ma poprzedniego obrazu - skopiuj pełny obraz
-    if (!pPrevious || 
-        pPrevious->width != pCurrent->width ||
-        pPrevious->height != pCurrent->height ||
-        pPrevious->bitsPerPixel != pCurrent->bitsPerPixel)
+    // ===== SPRAWDŹ CZY TO PIERWSZA KLATKA LUB ZMIANA ROZMIARU =====
+    bool isFullFrame = (! pPrevious || 
+                        pPrevious->width != pCurrent->width ||
+                        pPrevious->height != pCurrent->height ||
+                        pPrevious->bitsPerPixel != pCurrent->bitsPerPixel);
+    
+    pDiff->isFullFrame = isFullFrame;
+    
+    if (isFullFrame)
     {
+        // Pełny obraz - skopiuj bez XOR
         CopyMemory(pDiff->pData, pCurrent->pData, pCurrent->dataSize);
         return;
     }
     
-    // Oblicz różnicę pixel po pixelu
+    // ===== OBLICZ RÓŻNICĘ UŻYWAJĄC XOR =====
     int bytesPerPixel = bitsPerPixel / 8;
     
     for (int y = 0; y < pCurrent->height; y++)
@@ -138,29 +144,50 @@ void BmpStream::CalcDiff()
         for (int x = 0; x < pCurrent->width; x++)
         {
             int offset = x * bytesPerPixel;
-            bool changed = false;
             
-            // Porównaj wszystkie komponenty piksela (BGR lub BGRA)
+            // XOR każdego bajtu piksela
+            // Jeśli piksel się nie zmienił:  current XOR previous = 0
+            // Jeśli się zmienił: current XOR previous != 0
             for (int i = 0; i < bytesPerPixel; i++)
             {
-                if (pCurrRow[offset + i] != pPrevRow[offset + i])
-                {
-                    changed = true;
-                    break;
-                }
-            }
-            
-            // Jeśli zmieniony - skopiuj nowy kolor, jeśli nie - ustaw czarny
-            if (changed)
-            {
-                for (int i = 0; i < bytesPerPixel; i++)
-                    pDiffRow[offset + i] = pCurrRow[offset + i];
-            }
-            else
-            {
-                for (int i = 0; i < bytesPerPixel; i++)
-                    pDiffRow[offset + i] = 0;  // czarny = brak zmiany
+                pDiffRow[offset + i] = pCurrRow[offset + i] ^ pPrevRow[offset + i];
             }
         }
     }
+}
+
+// ===== APLIKUJE RÓŻNICĘ XOR NA ISTNIEJĄCY BUFOR =====
+bool BmpStream::ApplyDiffXOR(BYTE* target, const ImageData* diff)
+{
+    if (!target || ! diff || !diff->pData)
+        return false;
+    
+    // ===== JEŚLI TO PEŁNA KLATKA - SKOPIUJ BEZPOŚREDNIO =====
+    if (diff->isFullFrame)
+    {
+        CopyMemory(target, diff->pData, diff->dataSize);
+        return true;
+    }
+    
+    // ===== APLIKUJ RÓŻNICĘ XOR W MIEJSCU =====
+    int bytesPerPixel = diff->bitsPerPixel / 8;
+    
+    for (int y = 0; y < diff->height; y++)
+    {
+        BYTE* pDiffRow = diff->pData + (y * diff->stride);
+        BYTE* pTargetRow = target + (y * diff->stride);
+        
+        for (int x = 0; x < diff->width; x++)
+        {
+            int offset = x * bytesPerPixel;
+            
+            // XOR w miejscu:  target = target XOR diff
+            for (int i = 0; i < bytesPerPixel; i++)
+            {
+                pTargetRow[offset + i] ^= pDiffRow[offset + i];
+            }
+        }
+    }
+    
+    return true;
 }

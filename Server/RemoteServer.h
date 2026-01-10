@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <winsock.h>
 #include "../Shared/Frame.h"
+#include "../Shared/BmpStream.h"
 
 #define MAX_CLIENTS 10
 
@@ -36,6 +37,9 @@ private:
     bool running;
     HANDLE listenThread;
     DWORD listenThreadId;
+    
+    // BmpStream do przechwytywania ekranu
+    BmpStream* pBmpStream;
     
     // Callback do generowania ramek
     FrameGeneratorCallback frameCallback;
@@ -70,7 +74,7 @@ private:
     bool ReceiveKeyData(SOCKET socket, DataKey& data);
     bool SendFrame(SOCKET socket, FrameBmp& frame);
     bool SendHeader(SOCKET socket, HeaderBmp& header);
-    bool SendData(SOCKET socket, const char* data, int size);
+    bool SendData(SOCKET socket, const BYTE* data, int size);
     
     // Obsluga komend
     bool ProcessCommand(SOCKET socket, FrameCmd& cmd);
@@ -80,6 +84,7 @@ private:
     
     // Capture ekranu
     bool CaptureScreen(FrameBmp& frame);
+    void ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame);
 
 public:
     RemoteServer(int _port = 8080);

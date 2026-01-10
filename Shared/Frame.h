@@ -15,7 +15,7 @@
 #define CMD_MOUSE_WHEEL         9
 #define CMD_KEY_DOWN            10
 #define CMD_KEY_UP              11
-#define CMD_KEY_PRESS           12  // Down + Up
+#define CMD_KEY_PRESS           12
 
 // ===== RAMKA KOMENDY =====
 #pragma pack(push, 1)
@@ -35,9 +35,9 @@ struct FrameCmd {
 // ===== DANE KOMENDY MYSZY =====
 #pragma pack(push, 1)
 struct DataMouse {
-    int x;              // Pozycja X (wspó³rzêdne ekranu)
-    int y;              // Pozycja Y
-    int wheelDelta;     // Delta kó³ka myszy (dla CMD_MOUSE_WHEEL)
+    int x;
+    int y;
+    int wheelDelta;
     
     DataMouse() {
         x = 0;
@@ -50,9 +50,9 @@ struct DataMouse {
 // ===== DANE KOMENDY KLAWIATURY =====
 #pragma pack(push, 1)
 struct DataKey {
-    WORD virtualKey;    // Kod Virtual Key (VK_*)
-    WORD scanCode;      // Scan code
-    DWORD flags;        // Flagi (KEYEVENTF_*)
+    WORD virtualKey;
+    WORD scanCode;
+    DWORD flags;
     
     DataKey() {
         virtualKey = 0;
@@ -62,38 +62,65 @@ struct DataKey {
 };
 #pragma pack(pop)
 
+// Flagi dla HeaderBmp
+#define FRAME_FLAG_FULL      0x01  // Pe³na klatka (nie ró¿nica)
+#define FRAME_FLAG_DIFF      0x02  // Klatka ró¿nicowa
+
 // ===== NAG£ÓWEK RAMKI OBRAZU =====
 #pragma pack(push, 1)
 struct HeaderBmp {
     char magic[3];
+	BYTE flags;
     int x;
     int y;
     int width;
     int height;
+    int bitsPerPixel;
+    int stride;
     int length;
 
     HeaderBmp() {
         memcpy(magic, "BMP", 3);
+		flags = 0;
         x = 0;
         y = 0;
         width = 0;
         height = 0;
+        bitsPerPixel = 24;
+        stride = 0;
         length = 0;
     }
 };
 #pragma pack(pop)
 
+// DataBmp - wrapper na dane obrazu (NIE zwalnia pamiêci)
 struct DataBmp {
-    char* data;
-
-    DataBmp() :  data(NULL) {
+    BYTE* data;
+    bool ownsData;  // Czy struktura jest w³aœcicielem pamiêci
+    
+    DataBmp() : data(NULL), ownsData(false) {
     }
     
     ~DataBmp() {
-        if (data) {
+        if (data && ownsData) {
             delete[] data;
             data = NULL;
         }
+    }
+    
+    // Ustawia wskaŸnik BEZ przejmowania w³asnoœci
+    void SetReference(BYTE* pData) {
+        if (data && ownsData) delete[] data;
+        data = pData;
+        ownsData = false;
+    }
+    
+    // Alokuje w³asn¹ pamiêæ i kopiuje
+    void CopyData(const BYTE* pData, DWORD size) {
+        if (data && ownsData) delete[] data;
+        data = new BYTE[size];
+        CopyMemory(data, pData, size);
+        ownsData = true;
     }
 };
 

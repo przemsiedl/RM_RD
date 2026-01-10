@@ -39,13 +39,13 @@ void DrawStatusText(HDC hdc, HWND hwnd) {
         DWORD elapsed = (now - g_lastFrameTime) / 1000;
         
         sprintf(statusText,
-				"Polaczony | Ramek: %d | Ostatnia:  %d sek temu", 
-				g_frameCount,
-				elapsed);
+                "Polaczony | Ramek: %d | Ostatnia:  %d sek temu", 
+                g_frameCount,
+                elapsed);
         
         SetTextColor(hdc, RGB(0, 255, 0));
     } else {
-        sprintf(statusText, "Rozlaczony - probuje polaczyc...");
+        sprintf(statusText, "Rozlaczony - probuje polaczyc.. .");
         SetTextColor(hdc, RGB(255, 0, 0));
     }
     
@@ -67,13 +67,15 @@ void DrawStatusText(HDC hdc, HWND hwnd) {
 LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                                   WPARAM wParam, LPARAM lParam) {
     switch (message) {
-        case WM_CREATE: {
+        case WM_CREATE:  {
             g_client = new RemoteClient("192.168.1.10", 8080);
             g_client->Init();
 
-				HBITMAP hBitmap = NULL;
-            if(g_client->FetchBitmap(hBitmap)){
-            	g_hBitmap = hBitmap;
+            HBITMAP hBitmap = NULL;
+            if (g_client->FetchBitmap(hBitmap)) {
+                g_hBitmap = hBitmap;
+                g_frameCount++;
+                g_lastFrameTime = GetTickCount();
             }
             break;
         }
@@ -83,12 +85,12 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
             HDC hdc = BeginPaint(hwnd, &ps);
 
             if (g_hBitmap) {
-                // Rysuj bitmapê
+                // Rysuj bitmape
                 HDC hdcMem = CreateCompatibleDC(hdc);
                 HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, g_hBitmap);
                 
                 BITMAP bm;
-                GetObject(g_hBitmap, sizeof(bm), &bm);             
+                GetObject(g_hBitmap, sizeof(bm), &bm);
                 
                 // Skaluj do rozmiaru okna
                 RECT clientRect;
@@ -104,7 +106,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                 SelectObject(hdcMem, hOldBitmap);
                 DeleteDC(hdcMem);
             } else {
-                // Brak bitmapy - rysuj t³o
+                // Brak bitmapy - rysuj tlo
                 RECT rect;
                 GetClientRect(hwnd, &rect);
                 FillRect(hdc, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
@@ -125,17 +127,18 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
         }
         
         case WM_TIMER: {
-            if (wParam == 1000 && g_client != NULL)
-				{
+            if (wParam == 1000 && g_client != NULL) {
                 HBITMAP hBitmap = NULL;
-                if(g_client->FetchBitmap(hBitmap))
-                {
-						g_hBitmap = hBitmap;
-                  InvalidateRect(GetActiveWindow(), NULL, TRUE);
+                if (g_client->FetchBitmap(hBitmap)) {
+                    g_hBitmap = hBitmap;
+                    g_frameCount++;
+                    g_lastFrameTime = GetTickCount();
+                    InvalidateRect(hwnd, NULL, TRUE);
                 }
             }
             break;
         }
+        
         case WM_DESTROY: {
             KillTimer(hwnd, 1000);
             
@@ -153,11 +156,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
             break;
         }
         
-		case WM_LBUTTONDOWN:  {
-            if (! g_client)
-			{
-				break;
-			}
+        case WM_LBUTTONDOWN: {
+            if (! g_client) break;
             
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
@@ -169,10 +169,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
         }
         
         case WM_LBUTTONUP: {
-            if (!g_client)
-			{
-				break;
-			}
+            if (!g_client) break;
             
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
@@ -184,10 +181,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
         }
         
         case WM_RBUTTONDOWN:  {
-            if (!g_client)
-			{	
-				break;
-			}
+            if (!g_client) break;
             
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
@@ -199,10 +193,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
         }
         
         case WM_RBUTTONUP: {
-            if (!g_client)
-			{
-				break;
-			}
+            if (!g_client) break;
             
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
@@ -214,10 +205,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
         }
         
         case WM_MBUTTONDOWN: {
-            if (! g_client)
-			{
-				break;
-			}
+            if (! g_client) break;
             
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
@@ -229,10 +217,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
         }
         
         case WM_MBUTTONUP:  {
-            if (!g_client)
-			{	
-				break;
-			}
+            if (!g_client) break;
             
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
@@ -244,10 +229,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
         }
         
         case WM_MOUSEMOVE: {
-            if (!g_client)
-			{
-				break;
-			}
+            if (! g_client) break;
             
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
@@ -257,65 +239,67 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
             g_client->MouseMove(remoteX, remoteY);
             break;
         }
- /*
+              /*
         case WM_MOUSEWHEEL: {
             if (! g_client) break;
-            
-            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+
+            int delta = (short)HIWORD(wParam);  // Poprawione dla NT4. 0
             int localX = LOWORD(lParam);
             int localY = HIWORD(lParam);
             int remoteX, remoteY;
-            
+
             // Przelicz wspolrzedne ekranowe na klienckie
-            POINT pt = {localX, localY};
+            POINT pt;
+            pt.x = localX;
+            pt.y = localY;
             ScreenToClient(hwnd, &pt);
-            
+
             LocalToRemoteCoords(hwnd, pt.x, pt.y, remoteX, remoteY);
             g_client->MouseWheel(remoteX, remoteY, delta);
             break;
-        }
-        case WM_CHAR: {
-            if (!g_client) break;
+        }   */
 
-            // Obsluga znakow (dla liter, cyfr itp.)
-            char ch = (char)wParam;
-            WORD vk = VkKeyScan(ch);
-            if (vk != -1) {
-                g_client->KeyPress(LOBYTE(vk));
+        case WM_SYSKEYDOWN:    // Dla Alt + klawisz
+        case WM_KEYDOWN:  {
+            if (!g_client) break;
+            
+            // F5 - wymuszenie odswiezenia
+            if (wParam == VK_F5) {
+                HBITMAP hBitmap = NULL;
+                if (g_client->FetchBitmap(hBitmap)) {
+                    g_hBitmap = hBitmap;
+                    g_frameCount++;
+                    g_lastFrameTime = GetTickCount();
+                    InvalidateRect(hwnd, NULL, TRUE);
+                }
+                break;
             }
-            break;
-        }
-  */
-        case WM_SYSKEYDOWN:   // Dla Alt + klawisz
-        case WM_KEYDOWN:
-		{
-            if (!g_client)
-			{
-				break;
-			}
-			g_client->KeyDown((WORD)wParam);
+            
+            // ESC - zamkniecie
+            if (wParam == VK_ESCAPE) {
+                PostMessage(hwnd, WM_CLOSE, 0, 0);
+                break;
+            }
+            
+            g_client->KeyDown((WORD)wParam);
             break;
         }
         
         case WM_SYSKEYUP:    // Dla Alt + klawisz
-        case WM_KEYUP:
-		{
-            if (!g_client)
-			{
-				break;
-			}
+        case WM_KEYUP: {
+            if (! g_client) break;
             g_client->KeyUp((WORD)wParam);
             break;
         }
-		
-        default:
+        
+        default: 
             return DefWindowProc(hwnd, message, wParam, lParam);
     }
     
     return 0;
 }
 
-// G³ówna funkcja
+// Glowna funkcja
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
                    LPSTR args, int nShowCmd) {
     char* klasaOkna = "RemoteViewerClass";
@@ -327,7 +311,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
     wc.lpszClassName = klasaOkna;
     wc.lpfnWndProc = WindowProcedure;
     
-    if (!RegisterClass(&wc)) {
+    if (! RegisterClass(&wc)) {
         MessageBox(NULL, "Blad rejestracji klasy!", "Blad", MB_ICONERROR);
         return -1;
     }
@@ -336,7 +320,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
     
-    // Utwórz okno 80% rozmiaru ekranu, wyœrodkowane
+    // Utworz okno 80% rozmiaru ekranu, wysrodkowane
     int windowWidth = (screenWidth * 80) / 100;
     int windowHeight = (screenHeight * 80) / 100;
     int windowX = (screenWidth - windowWidth) / 2;
@@ -351,7 +335,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
         NULL, NULL, hInst, NULL
     );
     
-    if (!hwnd) {
+    if (! hwnd) {
         MessageBox(NULL, "Blad tworzenia okna!", "Blad", MB_ICONERROR);
         return -1;
     }

@@ -11,6 +11,9 @@ RemoteServer:: RemoteServer(int _port) {
     frameCallback = NULL;
     callbackUserData = NULL;
     
+    // Utworz BmpStream (24 bpp dla wydajnosci)
+    pBmpStream = new BmpStream(24);
+    
     // Inicjalizacja sekcji krytycznej
     InitializeCriticalSection(&clientsSection);
     
@@ -22,36 +25,38 @@ RemoteServer:: RemoteServer(int _port) {
 // ===== DESTRUKTOR =====
 RemoteServer::~RemoteServer() {
     Stop();
+    
+    // Zwolnij BmpStream
+    if (pBmpStream) {
+        delete pBmpStream;
+        pBmpStream = NULL;
+    }
+    
     DeleteCriticalSection(&clientsSection);
     WSACleanup();
 }
 
 // ===== INICJALIZACJA SOCKETU =====
 bool RemoteServer::InitializeSocket() {
-    // Utw�rz socket nas�uchuj�cy
     listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listenSocket == INVALID_SOCKET) {
         return false;
     }
     
-    // Pozw�l na ponowne u�ycie adresu
     int reuse = 1;
     setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&reuse, sizeof(reuse));
     
-    // Przygotuj adres serwera
     SOCKADDR_IN serverAddr;
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-    serverAddr.sin_addr.s_addr = INADDR_ANY;  // Wszystkie interfejsy
+    serverAddr. sin_port = htons(port);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
     
-    // Binduj socket do adresu
     if (bind(listenSocket, (PSOCKADDR)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
         closesocket(listenSocket);
         listenSocket = INVALID_SOCKET;
         return false;
     }
     
-    // Rozpocznij nas�uchiwanie
     if (listen(listenSocket, MAX_CLIENTS) == SOCKET_ERROR) {
         closesocket(listenSocket);
         listenSocket = INVALID_SOCKET;
@@ -72,19 +77,17 @@ void RemoteServer::CleanupSocket() {
 // ===== URUCHOMIENIE SERWERA =====
 bool RemoteServer::Start() {
     if (running) {
-        return true;  // Ju� dzia�a
+        return true;
     }
     
-    // Inicjalizuj socket
     if (!InitializeSocket()) {
         return false;
     }
     
-    // Utw�rz w�tek nas�uchuj�cy
     running = true;
     listenThread = CreateThread(NULL, 0, ListenThreadProc, this, 0, &listenThreadId);
     
-    if (! listenThread) {
+    if (!listenThread) {
         running = false;
         CleanupSocket();
         return false;
@@ -94,20 +97,15 @@ bool RemoteServer::Start() {
 }
 
 // ===== ZATRZYMANIE SERWERA =====
-void RemoteServer::Stop() {
+void RemoteServer:: Stop() {
     if (!running) {
         return;
     }
     
     running = false;
-    
-    // Zamknij socket nas�uchuj�cy (to przerwie accept())
     CleanupSocket();
-    
-    // Roz��cz wszystkich klient�w
     DisconnectAllClients();
     
-    // Poczekaj na zako�czenie w�tku nas�uchuj�cego
     if (listenThread) {
         WaitForSingleObject(listenThread, 5000);
         CloseHandle(listenThread);
@@ -115,31 +113,28 @@ void RemoteServer::Stop() {
     }
 }
 
-// ===== W�TEK NAS�UCHUJ�CY =====
+// ===== WĄTEK NASŁUCHUJĄCY =====
 DWORD WINAPI RemoteServer::ListenThreadProc(LPVOID param) {
     RemoteServer* server = (RemoteServer*)param;
     server->ListenLoop();
     return 0;
 }
 
-// ===== P�TLA NAS�UCHIWANIA =====
+// ===== PĘTLA NASŁUCHIWANIA =====
 void RemoteServer::ListenLoop() {
     while (running) {
-        // Znajd� wolne miejsce dla klienta
         int clientIndex = FindFreeClientSlot();
         if (clientIndex < 0) {
-            Sleep(100);  // Brak miejsca - czekaj
+            Sleep(100);
             continue;
         }
         
         ClientConnection* client = &clients[clientIndex];
         
-        // Akceptuj nowe po��czenie
         if (AcceptClient(client)) {
-            // Utw�rz w�tek dla klienta
             client->thread = CreateThread(NULL, 0, ClientThreadProc, client, 0, &client->threadId);
             
-            if (!client->thread) {
+            if (! client->thread) {
                 DisconnectClient(client);
             }
         }
@@ -156,12 +151,10 @@ bool RemoteServer::AcceptClient(ClientConnection* client) {
         return false;
     }
     
-    // Ustaw timeouty
-    int timeout = 30000;  // 30 sekund
+    int timeout = 30000;
     setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
     setsockopt(client->socket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
     
-    // Wy��cz algorytm Nagle
     int flag = 1;
     setsockopt(client->socket, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag));
     
@@ -172,12 +165,11 @@ bool RemoteServer::AcceptClient(ClientConnection* client) {
     return true;
 }
 
-// ===== W�TEK OBS�UGI KLIENTA =====
+// ===== WĄTEK OBSŁUGI KLIENTA =====
 DWORD WINAPI RemoteServer::ClientThreadProc(LPVOID param) {
     ClientConnection* client = (ClientConnection*)param;
     RemoteServer* server = (RemoteServer*)client->userData;
     
-    // Zapisz wska�nik do serwera
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (&server->clients[i] == client) {
             client->userData = server;
@@ -189,23 +181,20 @@ DWORD WINAPI RemoteServer::ClientThreadProc(LPVOID param) {
     return 0;
 }
 
-// ===== OBS�UGA KLIENTA =====
+// ===== OBSŁUGA KLIENTA =====
 void RemoteServer::HandleClient(ClientConnection* client) {
     while (running && client->active) {
         FrameCmd cmd;
         
-        // Odbierz komend� od klienta
         if (! ReceiveCommand(client->socket, cmd)) {
-            break;  // B��d lub roz��czenie
+            break;
         }
         
-        // Przetw�rz komend�
-        if (!ProcessCommand(client->socket, cmd)) {
-            break;  // B��d przetwarzania
+        if (! ProcessCommand(client->socket, cmd)) {
+            break;
         }
     }
     
-    // Roz��cz klienta
     DisconnectClient(client);
 }
 
@@ -217,7 +206,6 @@ bool RemoteServer::ReceiveCommand(SOCKET socket, FrameCmd& cmd) {
         return false;
     }
     
-    // Weryfikuj magic
     if (cmd.magic[0] != 'C' || cmd.magic[1] != 'M' || cmd.magic[2] != 'D') {
         return false;
     }
@@ -228,7 +216,7 @@ bool RemoteServer::ReceiveCommand(SOCKET socket, FrameCmd& cmd) {
 // ===== PRZETWARZANIE KOMENDY =====
 bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
     switch (cmd.cmd) {
-        case CMD_GET_FRAME: 
+        case CMD_GET_FRAME:
             return HandleGetFrame(socket);
         
         case CMD_MOUSE_MOVE:
@@ -238,105 +226,86 @@ bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
         case CMD_MOUSE_RIGHT_UP:
         case CMD_MOUSE_MIDDLE_DOWN:
         case CMD_MOUSE_MIDDLE_UP: 
-        case CMD_MOUSE_WHEEL:
+        case CMD_MOUSE_WHEEL: 
             return ProcessMouseCommand(socket, cmd);
         
         case CMD_KEY_DOWN:
-        case CMD_KEY_UP:
-        case CMD_KEY_PRESS: 
+        case CMD_KEY_UP: 
+        case CMD_KEY_PRESS:
             return ProcessKeyCommand(socket, cmd);
         
         default: 
-            return false;  // Nieznana komenda
+            return false;
     }
 }
 
-// ===== OBS�UGA KOMENDY GET_FRAME =====
+// ===== OBSŁUGA KOMENDY GET_FRAME =====
 bool RemoteServer::HandleGetFrame(SOCKET socket) {
     FrameBmp frame;
     
-    // Je�li jest callback, u�yj go
     if (frameCallback) {
-        if (! frameCallback(frame, callbackUserData)) {
+        if (!frameCallback(frame, callbackUserData)) {
             return false;
         }
     } else {
-        // Domy�lnie - zr�b screenshot
         if (!CaptureScreen(frame)) {
             return false;
         }
     }
     
-    // Wy�lij ramk� do klienta
     bool result = SendFrame(socket, frame);
-
-    // Zwolnij pami��
-    //if (frame.data) {
-    //    delete[] frame.data;
-    //    frame.data = NULL;
-    //}
-
+    
     return result;
 }
 
-// ===== CAPTURE EKRANU (zaktualizowany) =====
-bool RemoteServer::CaptureScreen(FrameBmp& frame) {
-    HDC hdcScreen = GetDC(NULL);
-    if (!hdcScreen) {
-        return false;
-    }
-    
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
-    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
-    
-    BitBlt(hdcMem, 0, 0, screenWidth, screenHeight, hdcScreen, 0, 0, SRCCOPY);
-    
-    BITMAPINFO bmi;
-    memset(&bmi, 0, sizeof(bmi));
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = screenWidth;
-    bmi.bmiHeader.biHeight = -screenHeight;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 24;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    
-    int stride = ((screenWidth * 3 + 3) / 4) * 4;
-    int dataSize = stride * screenHeight;
-    
-    // Alokuj przez DataBmp
-    frame.data.data = new char[dataSize];
-    if (!frame.data.data) {
-        SelectObject(hdcMem, hOldBitmap);
-        DeleteObject(hBitmap);
-        DeleteDC(hdcMem);
-        ReleaseDC(NULL, hdcScreen);
-        return false;
-    }
-    
-    int result = GetDIBits(hdcScreen, hBitmap, 0, screenHeight, 
-                          frame.data.data, &bmi, DIB_RGB_COLORS);
-    
+// ===== KONWERSJA ImageData -> FrameBmp (ZAKTUALIZOWANE) =====
+void RemoteServer::ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame) {
     frame.header.x = 0;
-    frame.header.y = 0;
-    frame.header.width = screenWidth;
-    frame.header.height = screenHeight;
-    frame.header.length = dataSize;
+    frame.header. y = 0;
+    frame.header.width = img->width;
+    frame.header.height = img->height;
+    frame.header.bitsPerPixel = img->bitsPerPixel;
+    frame.header.stride = img->stride;
+    frame.header.length = img->dataSize;
     
-    SelectObject(hdcMem, hOldBitmap);
-    DeleteObject(hBitmap);
-    DeleteDC(hdcMem);
-    ReleaseDC(NULL, hdcScreen);
+    // ===== UŻYJ isFullFrame Z ImageData =====
+    if (img->isFullFrame) {
+        frame.header.flags = FRAME_FLAG_FULL;
+    } else {
+        frame.header. flags = FRAME_FLAG_DIFF;
+    }
     
-    return (result != 0);
+    // Użyj SetReference - BEZ kopiowania danych
+    frame.data.SetReference(img->pData);
 }
 
-// ===== WYSYLANIE RAMKI (zaktualizowany) =====
+// ===== CAPTURE EKRANU (używa BmpStream) =====
+bool RemoteServer::CaptureScreen(FrameBmp& frame) {
+    if (!pBmpStream) {
+        return false;
+    }
+    
+    // Przechwyt nowego obrazu
+    pBmpStream->Capture();
+    
+    // Oblicz różnicę
+    pBmpStream->CalcDiff();
+    
+    // Pobierz różnicę
+    const ImageData* diff = pBmpStream->GetDiff();
+    if (!diff || ! diff->pData) {
+        return false;
+    }
+    
+    // Konwertuj do FrameBmp (bez kopiowania!)
+    ImageDataToFrameBmp(diff, frame);
+    
+    return true;
+}
+
+// ===== WYSYŁANIE RAMKI =====
 bool RemoteServer::SendFrame(SOCKET socket, FrameBmp& frame) {
-    if (!SendHeader(socket, frame. header)) {
+    if (!SendHeader(socket, frame.header)) {
         return false;
     }
     
@@ -349,14 +318,14 @@ bool RemoteServer::SendFrame(SOCKET socket, FrameBmp& frame) {
     return true;
 }
 
-// ===== WYSYLANIE NAGLOWKA (zaktualizowany) =====
+// ===== WYSYŁANIE NAGŁÓWKA =====
 bool RemoteServer::SendHeader(SOCKET socket, HeaderBmp& header) {
     int sent = send(socket, (char*)&header, sizeof(HeaderBmp), 0);
     return (sent == sizeof(HeaderBmp));
 }
 
-// ===== WYSY�ANIE DANYCH =====
-bool RemoteServer:: SendData(SOCKET socket, const char* data, int size) {
+// ===== WYSYŁANIE DANYCH =====
+bool RemoteServer::SendData(SOCKET socket, const BYTE* data, int size) {
     if (! data || size <= 0) {
         return true;
     }
@@ -364,10 +333,10 @@ bool RemoteServer:: SendData(SOCKET socket, const char* data, int size) {
     int totalSent = 0;
     
     while (totalSent < size) {
-        int sent = send(socket, data + totalSent, size - totalSent, 0);
+        int sent = send(socket, (const char*)(data + totalSent), size - totalSent, 0);
         
         if (sent <= 0) {
-            return false;  // B��d
+            return false;
         }
         
         totalSent += sent;
@@ -376,7 +345,7 @@ bool RemoteServer:: SendData(SOCKET socket, const char* data, int size) {
     return true;
 }
 
-// ===== ROZ��CZANIE KLIENTA =====
+// ===== ROZŁĄCZANIE KLIENTA =====
 void RemoteServer::DisconnectClient(ClientConnection* client) {
     EnterCriticalSection(&clientsSection);
     
@@ -389,7 +358,6 @@ void RemoteServer::DisconnectClient(ClientConnection* client) {
         }
         
         if (client->thread) {
-            // Nie czekamy tutaj - w�tek zako�czy si� sam
             CloseHandle(client->thread);
             client->thread = NULL;
         }
@@ -398,7 +366,7 @@ void RemoteServer::DisconnectClient(ClientConnection* client) {
     LeaveCriticalSection(&clientsSection);
 }
 
-// ===== ROZ��CZANIE WSZYSTKICH KLIENT�W =====
+// ===== ROZŁĄCZANIE WSZYSTKICH KLIENTÓW =====
 void RemoteServer::DisconnectAllClients() {
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].active) {
@@ -406,7 +374,6 @@ void RemoteServer::DisconnectAllClients() {
         }
     }
     
-    // Poczekaj na zako�czenie w�tk�w
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].thread) {
             WaitForSingleObject(clients[i].thread, 2000);
@@ -414,14 +381,13 @@ void RemoteServer::DisconnectAllClients() {
     }
 }
 
-// ===== ZNAJD� WOLNE MIEJSCE =====
+// ===== ZNAJDŹ WOLNE MIEJSCE =====
 int RemoteServer::FindFreeClientSlot() {
     EnterCriticalSection(&clientsSection);
     
     int index = -1;
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (!clients[i]. active) {
-            // Dodatkowa inicjalizacja wska�nika do serwera
             clients[i]. userData = this;
             index = i;
             break;
@@ -432,7 +398,7 @@ int RemoteServer::FindFreeClientSlot() {
     return index;
 }
 
-// ===== LICZBA AKTYWNYCH KLIENT�W =====
+// ===== LICZBA AKTYWNYCH KLIENTÓW =====
 int RemoteServer::GetActiveClientCount() {
     EnterCriticalSection(&clientsSection);
     
@@ -473,12 +439,12 @@ bool RemoteServer::ReceiveMouseData(SOCKET socket, DataMouse& data) {
 }
 
 // ===== ODBIERANIE DANYCH KLAWIATURY =====
-bool RemoteServer:: ReceiveKeyData(SOCKET socket, DataKey& data) {
+bool RemoteServer::ReceiveKeyData(SOCKET socket, DataKey& data) {
     int received = recv(socket, (char*)&data, sizeof(DataKey), 0);
     return (received == sizeof(DataKey));
 }
 
-// ===== OBSLUGA KOMEND MYSZY (zaktualizowany) =====
+// ===== OBSŁUGA KOMEND MYSZY =====
 bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
     DataMouse data;
     
@@ -490,7 +456,7 @@ bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
     
     int absX = (data.x * 65535) / screenWidth;
-    int absY = (data.y * 65535) / screenHeight;
+    int absY = (data. y * 65535) / screenHeight;
     
     DWORD flags = MOUSEEVENTF_ABSOLUTE;
     
@@ -505,12 +471,12 @@ bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
             mouse_event(flags, absX, absY, 0, 0);
             break;
         
-        case CMD_MOUSE_LEFT_UP: 
+        case CMD_MOUSE_LEFT_UP:
             flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP;
             mouse_event(flags, absX, absY, 0, 0);
             break;
         
-        case CMD_MOUSE_RIGHT_DOWN:
+        case CMD_MOUSE_RIGHT_DOWN: 
             flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_RIGHTDOWN;
             mouse_event(flags, absX, absY, 0, 0);
             break;
@@ -530,7 +496,7 @@ bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
             mouse_event(flags, absX, absY, 0, 0);
             break;
         
-        case CMD_MOUSE_WHEEL: 
+        case CMD_MOUSE_WHEEL:
             flags |= MOUSEEVENTF_WHEEL;
             mouse_event(flags, absX, absY, data.wheelDelta, 0);
             break;
@@ -539,25 +505,25 @@ bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
     return true;
 }
 
-// ===== OBSLUGA KOMEND KLAWIATURY (zaktualizowany) =====
+// ===== OBSŁUGA KOMEND KLAWIATURY =====
 bool RemoteServer::ProcessKeyCommand(SOCKET socket, const FrameCmd& cmd) {
     DataKey data;
     
-    if (!ReceiveKeyData(socket, data)) {
+    if (! ReceiveKeyData(socket, data)) {
         return false;
     }
     
     switch (cmd.cmd) {
-        case CMD_KEY_DOWN:
+        case CMD_KEY_DOWN: 
             keybd_event(data.virtualKey, data.scanCode, 0, 0);
             break;
         
-        case CMD_KEY_UP:
-            keybd_event(data.virtualKey, data.scanCode, KEYEVENTF_KEYUP, 0);
+        case CMD_KEY_UP: 
+            keybd_event(data. virtualKey, data.scanCode, KEYEVENTF_KEYUP, 0);
             break;
         
-        case CMD_KEY_PRESS: 
-            keybd_event(data. virtualKey, data.scanCode, 0, 0);
+        case CMD_KEY_PRESS:
+            keybd_event(data.virtualKey, data.scanCode, 0, 0);
             Sleep(50);
             keybd_event(data.virtualKey, data.scanCode, KEYEVENTF_KEYUP, 0);
             break;

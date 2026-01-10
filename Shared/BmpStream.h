@@ -12,10 +12,11 @@ struct ImageData
     int stride;
     DWORD dataSize;
     BYTE* pData;
+    bool isFullFrame;  // true = pełny obraz, false = różnica XOR
     
     // Konstruktor - inicjalizacja
     ImageData() : width(0), height(0), bitsPerPixel(0), 
-                  stride(0), dataSize(0), pData(NULL) {}
+                  stride(0), dataSize(0), pData(NULL), isFullFrame(true) {}
     
     // Destruktor - automatyczne zwalnianie
     ~ImageData() 
@@ -35,7 +36,7 @@ private:
 
 class BmpStream
 {
-private:
+private: 
     // Bufory obrazów
     ImageData* pPrevious;
     ImageData* pCurrent;
@@ -68,6 +69,13 @@ public:
     
     // Zwraca poprzedni obraz (NIE zwalniać)
     const ImageData* GetPrevious() const { return pPrevious; }
+    
+    // ===== SKŁADANIE OBRAZÓW (REKONSTRUKCJA Z RÓŻNIC) =====
+    
+    // Aplikuje różnicę XOR na istniejący bufor
+    // target - bufor docelowy (zostanie zmodyfikowany)
+    // diff - różnica do aplikacji
+    static bool ApplyDiffXOR(BYTE* target, const ImageData* diff);
 };
 
 #endif

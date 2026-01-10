@@ -2,9 +2,12 @@
 #include "..\Shared\Frame.h"
 #include <string.h>
 
-RemoteClient:: RemoteClient(const char* _host, int _port) {
-	remoteScreenWidth = 0;
-   remoteScreenHeight = 0;
+RemoteClient::RemoteClient(const char* _host, int _port) {
+    remoteScreenWidth = 0;
+    remoteScreenHeight = 0;
+    
+    pFrameBuffer = NULL;
+    hBitmap = NULL;
 
     host = new char[strlen(_host) + 1];
     strcpy(host, _host);
@@ -18,8 +21,19 @@ RemoteClient:: RemoteClient(const char* _host, int _port) {
     }
 }
 
-RemoteClient:: ~RemoteClient() {
+RemoteClient::~RemoteClient() {
     Disconnect();
+    
+    // Zwolnij bufor (ImageData destruktor zwalnia pData)
+    if (pFrameBuffer) {
+        delete pFrameBuffer;
+        pFrameBuffer = NULL;
+    }
+    
+    if (hBitmap) {
+        DeleteObject(hBitmap);
+        hBitmap = NULL;
+    }
 
     if (host) {
         delete[] host;
@@ -33,7 +47,7 @@ void RemoteClient::Init()
 {
     LPHOSTENT hostEntry = gethostbyname(host);
     
-    if (! hostEntry || ! hostEntry->h_addr_list || !hostEntry->h_addr_list[0]) {
+    if (! hostEntry || !hostEntry->h_addr_list || !hostEntry->h_addr_list[0]) {
         // blad nie udalo sie rozwiazac nazwy
         return;
     }
@@ -60,7 +74,7 @@ bool RemoteClient::Connect() {
 
     // rozwiazanie adresu hosta
     LPHOSTENT hostEntry = gethostbyname(host);
-    if (!hostEntry || !hostEntry->h_addr_list || ! hostEntry->h_addr_list[0]) {
+    if (!hostEntry || !hostEntry->h_addr_list || !hostEntry->h_addr_list[0]) {
         closesocket(socket);
         socket = INVALID_SOCKET;
         return false;
@@ -93,7 +107,115 @@ bool RemoteClient::IsConnected() const {
     return (socket != INVALID_SOCKET);
 }
 
-// ===== WYSYLANIE KOMENDY =====
+// ===== ZAPEWNIENIE BUFORA (ALOKACJA/REALOKACJA) =====
+bool RemoteClient::EnsureFrameBuffer(int width, int height, int bpp, int stride) {
+    DWORD newSize = stride * height;
+    
+    // Sprawdź czy trzeba realokować
+    bool needsRealloc = (! pFrameBuffer ||
+                         pFrameBuffer->width != width || 
+                         pFrameBuffer->height != height ||
+                         pFrameBuffer->bitsPerPixel != bpp ||
+                         pFrameBuffer->stride != stride);
+    
+    if (needsRealloc) {
+        // Zwolnij stary bufor
+        if (pFrameBuffer) {
+            delete pFrameBuffer;
+        }
+        
+        // Utwórz nowy
+        pFrameBuffer = new ImageData();
+        if (!pFrameBuffer) {
+            return false;
+        }
+        
+        pFrameBuffer->width = width;
+        pFrameBuffer->height = height;
+        pFrameBuffer->bitsPerPixel = bpp;
+        pFrameBuffer->stride = stride;
+        pFrameBuffer->dataSize = newSize;
+        pFrameBuffer->pData = new BYTE[newSize];
+        pFrameBuffer->isFullFrame = true;
+        
+        if (!pFrameBuffer->pData) {
+            delete pFrameBuffer;
+            pFrameBuffer = NULL;
+            return false;
+        }
+        
+        // Wyzeruj bufor
+        memset(pFrameBuffer->pData, 0, newSize);
+    }
+    
+    return true;
+}
+
+// ===== ODBIERANIE DANYCH BEZPOŚREDNIO DO ImageData =====
+bool RemoteClient:: ReceiveImageData(ImageData* img, const HeaderBmp& header) {
+    if (!img || !img->pData || socket == INVALID_SOCKET) {
+        return false;
+    }
+    
+    // Sprawdź flagę - pełna klatka czy różnica? 
+    bool isFullFrame = (header.flags & FRAME_FLAG_FULL) != 0;
+    
+    // Alokuj tymczasowy bufor dla odebranych danych
+    BYTE* tempBuffer = new BYTE[header.length];
+    if (!tempBuffer) {
+        return false;
+    }
+    
+    // Odbierz dane z sieci
+    int totalReceived = 0;
+    while (totalReceived < header.length) {
+        int received = recv(socket,
+                           (char*)(tempBuffer + totalReceived),
+                           header.length - totalReceived,
+                           0);
+        
+        if (received <= 0) {
+            delete[] tempBuffer;
+            Disconnect();
+            return false;
+        }
+        
+        totalReceived += received;
+    }
+    
+    // ===== APLIKUJ DANE NA BUFOR =====
+    if (isFullFrame) {
+        // Pełny obraz - skopiuj bezpośrednio
+        memcpy(img->pData, tempBuffer, img->dataSize);
+        img->isFullFrame = true;
+    } else {
+        // Różnica XOR - aplikuj przy użyciu BmpStream
+        int bytesPerPixel = img->bitsPerPixel / 8;
+        
+        for (int y = 0; y < img->height; y++) {
+            const BYTE* pRecvRow = tempBuffer + (y * img->stride);
+            BYTE* pBufferRow = img->pData + (y * img->stride);
+            
+            for (int x = 0; x < img->width; x++) {
+                int offset = x * bytesPerPixel;
+                
+                // XOR w miejscu
+                for (int i = 0; i < bytesPerPixel; i++) {
+                    pBufferRow[offset + i] ^= pRecvRow[offset + i];
+                }
+            }
+        }
+        
+        img->isFullFrame = false;
+    }
+    
+    // Zwolnij tymczasowy bufor
+    delete[] tempBuffer;
+    
+    return true;
+}
+
+// ===== WYSYŁANIE KOMENDY =====
 bool RemoteClient::SendCommand(const FrameCmd& cmd, const void* data, int dataSize) {
     if (!Connect()) return false;
 
@@ -117,73 +239,77 @@ bool RemoteClient::SendCommand(const FrameCmd& cmd, const void* data, int dataSi
     return true;
 }
 
-bool RemoteClient::ReceiveHeader(HeaderBmp& header) {
-    if (socket == INVALID_SOCKET) {
+// ===== POBIERANIE BITMAPY (UPROSZCZONE) =====
+bool RemoteClient::FetchBitmap(HBITMAP& result) {
+    // Wyślij komendę GET_FRAME
+    FrameCmd cmd;
+    cmd.cmd = CMD_GET_FRAME;
+    
+    if (!SendCommand(cmd)) {
         return false;
     }
-
+    
+    // Odbierz nagłówek
+    HeaderBmp header;
     int received = recv(socket, (char*)&header, sizeof(HeaderBmp), 0);
     if (received != sizeof(HeaderBmp)) {
         Disconnect();
         return false;
     }
-
+    
     // Weryfikuj magic
     if (header.magic[0] != 'B' || header.magic[1] != 'M' || header.magic[2] != 'P') {
         return false;
     }
-
-    return true;
-}
-
-bool RemoteClient::ReceiveData(char* buffer, int size) {
-    if (socket == INVALID_SOCKET || ! buffer || size <= 0) {
+    
+    // Zapewnij bufor odpowiedniego rozmiaru
+    if (!EnsureFrameBuffer(header. width, header.height, 
+                          header.bitsPerPixel, header.stride)) {
         return false;
     }
-
-    int totalReceived = 0;
-
-    while (totalReceived < size) {
-        int received = recv(socket,
-                           buffer + totalReceived,
-                           size - totalReceived,
-                           0);
-
-        if (received <= 0) {
-            Disconnect();
-            return false;
-        }
-
-        totalReceived += received;
+    
+    // Odbierz dane bezpośrednio do bufora
+    if (!ReceiveImageData(pFrameBuffer, header)) {
+        return false;
     }
-
-    return true;
+    
+    // Zapamietaj rozmiar zdalnego ekranu
+    remoteScreenWidth = pFrameBuffer->width;
+    remoteScreenHeight = pFrameBuffer->height;
+    
+    // Utwórz bitmapę z bufora
+    if (hBitmap) {
+        DeleteObject(hBitmap);
+        hBitmap = NULL;
+    }
+    
+    hBitmap = CreateBitmapFromImageData(pFrameBuffer);
+    result = hBitmap;
+    
+    return (hBitmap != NULL);
 }
 
-bool RemoteClient::Get(FrameBmp& frame) {
-    // DataBmp destruktor automatycznie zwolni stare dane
-    
-    FrameCmd cmd;
-    cmd. cmd = CMD_GET_FRAME;
-
-    if (!SendCommand(cmd)) return false;
-    if (!ReceiveHeader(frame. header)) return false;
-
-    if (frame.header.length > 0) {
-        frame.data.data = new char[frame.header.length];
-        if (!frame.data.data) {
-            Disconnect();
-            return false;
-        }
-
-        if (!ReceiveData(frame.data.data, frame. header.length)) {
-            delete[] frame.data.data;
-            frame.data.data = NULL;
-            return false;
-        }
+// ===== TWORZENIE BITMAPY Z ImageData =====
+HBITMAP RemoteClient::CreateBitmapFromImageData(const ImageData* img) {
+    if (!img || !img->pData || img->width <= 0 || img->height <= 0) {
+        return NULL;
     }
+    
+    BITMAPINFO bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = img->width;
+    bmi.bmiHeader.biHeight = -img->height;  // Top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = img->bitsPerPixel;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    
+    HDC hdc = GetDC(NULL);
+    HBITMAP hBmp = CreateDIBitmap(hdc, &bmi.bmiHeader, CBM_INIT,
+                                   img->pData, &bmi, DIB_RGB_COLORS);
+    ReleaseDC(NULL, hdc);
 
-    return true;
+    return hBmp;
 }
 
 // ===== KOMENDY MYSZY =====
@@ -193,8 +319,8 @@ bool RemoteClient::MouseMove(int x, int y) {
     cmd.cmd = CMD_MOUSE_MOVE;
     
     DataMouse data;
-    data. x = x;
-    data. y = y;
+    data.x = x;
+    data.y = y;
     
     return SendCommand(cmd, &data, sizeof(DataMouse));
 }
@@ -212,11 +338,11 @@ bool RemoteClient::MouseLeftDown(int x, int y) {
 
 bool RemoteClient::MouseLeftUp(int x, int y) {
     FrameCmd cmd;
-    cmd. cmd = CMD_MOUSE_LEFT_UP;
+    cmd.cmd = CMD_MOUSE_LEFT_UP;
     
     DataMouse data;
-    data. x = x;
-    data. y = y;
+    data.x = x;
+    data.y = y;
     
     return SendCommand(cmd, &data, sizeof(DataMouse));
 }
@@ -243,9 +369,9 @@ bool RemoteClient::MouseRightUp(int x, int y) {
     return SendCommand(cmd, &data, sizeof(DataMouse));
 }
 
-bool RemoteClient::MouseMiddleDown(int x, int y) {
+bool RemoteClient:: MouseMiddleDown(int x, int y) {
     FrameCmd cmd;
-    cmd.cmd = CMD_MOUSE_MIDDLE_DOWN;
+    cmd. cmd = CMD_MOUSE_MIDDLE_DOWN;
     
     DataMouse data;
     data.x = x;
@@ -254,9 +380,9 @@ bool RemoteClient::MouseMiddleDown(int x, int y) {
     return SendCommand(cmd, &data, sizeof(DataMouse));
 }
 
-bool RemoteClient::MouseMiddleUp(int x, int y) {
+bool RemoteClient:: MouseMiddleUp(int x, int y) {
     FrameCmd cmd;
-    cmd.cmd = CMD_MOUSE_MIDDLE_UP;
+    cmd. cmd = CMD_MOUSE_MIDDLE_UP;
     
     DataMouse data;
     data.x = x;
@@ -265,7 +391,7 @@ bool RemoteClient::MouseMiddleUp(int x, int y) {
     return SendCommand(cmd, &data, sizeof(DataMouse));
 }
 
-bool RemoteClient::MouseWheel(int x, int y, int delta) {
+bool RemoteClient:: MouseWheel(int x, int y, int delta) {
     FrameCmd cmd;
     cmd.cmd = CMD_MOUSE_WHEEL;
     
@@ -290,7 +416,7 @@ bool RemoteClient::KeyDown(WORD virtualKey) {
     return SendCommand(cmd, &data, sizeof(DataKey));
 }
 
-bool RemoteClient:: KeyUp(WORD virtualKey) {
+bool RemoteClient::KeyUp(WORD virtualKey) {
     FrameCmd cmd;
     cmd.cmd = CMD_KEY_UP;
     
@@ -300,48 +426,4 @@ bool RemoteClient:: KeyUp(WORD virtualKey) {
     data.flags = KEYEVENTF_KEYUP;
     
     return SendCommand(cmd, &data, sizeof(DataKey));
-}
-
-bool RemoteClient::FetchBitmap(HBITMAP& result)
-{
-    FrameBmp frame;
-    if (Get(frame))
-	{
-        if (hBitmap) {
-            DeleteObject(hBitmap);
-            hBitmap = NULL;
-        }
-		
-        hBitmap = CreateBitmapFromFrame(frame);
-		result = hBitmap;
-		return true;
-    }
-	return false;
-	//InvalidateRect(GetActiveWindow(), NULL, TRUE);
-}
-
-HBITMAP RemoteClient::CreateBitmapFromFrame(FrameBmp& frame) {
-    if (!frame.data.data || frame.header.length <= 0) {
-        return NULL;
-    }
-    
-    // Zapamietaj rozmiar zdalnego ekranu
-    remoteScreenWidth = frame.header.width;
-    remoteScreenHeight = frame.header.height;
-    
-    BITMAPINFO bmi;
-    memset(&bmi, 0, sizeof(bmi));
-    bmi.bmiHeader. biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = frame.header.width;
-    bmi.bmiHeader.biHeight = -frame.header.height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 24;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    
-    HDC hdc = GetDC(NULL);
-    HBITMAP hBmp = CreateDIBitmap(hdc, &bmi.bmiHeader, CBM_INIT,
-                                   frame.data.data, &bmi, DIB_RGB_COLORS);
-    ReleaseDC(NULL, hdc);
-
-    return hBmp;
 }

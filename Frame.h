@@ -97,4 +97,9 @@ struct DataBmp {
     }
 };
 
+struct FrameBmp {
+    HeaderBmp header;
+    DataBmp data;
+};
+
 #endif

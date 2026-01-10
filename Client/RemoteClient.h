@@ -4,12 +4,6 @@
 #include <windows.h>
 #include "..\Frame.h"
 
-// Struktura ramki (dla klienta)
-struct Frame {
-    HeaderBmp header;
-    DataBmp data;
-};
-
 class RemoteClient {
 private:  
     char* host;
@@ -24,9 +18,9 @@ private:
     bool ReceiveHeader(HeaderBmp& header);
     bool ReceiveData(char* buffer, int size);
     
-    bool Get(Frame& frame);
+    bool Get(FrameBmp& frame);
     
-    HBITMAP CreateBitmapFromFrame(Frame& frame);
+    HBITMAP CreateBitmapFromFrame(FrameBmp& frame);
 
 public:
     RemoteClient(const char* _host, int port = 8080);

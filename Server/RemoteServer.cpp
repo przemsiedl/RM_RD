@@ -253,7 +253,7 @@ bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
 
 // ===== OBS�UGA KOMENDY GET_FRAME =====
 bool RemoteServer::HandleGetFrame(SOCKET socket) {
-    Frame frame;
+    FrameBmp frame;
     
     // Je�li jest callback, u�yj go
     if (frameCallback) {
@@ -280,7 +280,7 @@ bool RemoteServer::HandleGetFrame(SOCKET socket) {
 }
 
 // ===== CAPTURE EKRANU (zaktualizowany) =====
-bool RemoteServer::CaptureScreen(Frame& frame) {
+bool RemoteServer::CaptureScreen(FrameBmp& frame) {
     HDC hdcScreen = GetDC(NULL);
     if (!hdcScreen) {
         return false;
@@ -335,7 +335,7 @@ bool RemoteServer::CaptureScreen(Frame& frame) {
 }
 
 // ===== WYSYLANIE RAMKI (zaktualizowany) =====
-bool RemoteServer::SendFrame(SOCKET socket, Frame& frame) {
+bool RemoteServer::SendFrame(SOCKET socket, FrameBmp& frame) {
     if (!SendHeader(socket, frame. header)) {
         return false;
     }

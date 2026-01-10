@@ -7,14 +7,8 @@
 
 #define MAX_CLIENTS 10
 
-// Struktura ramki (header + data)
-struct Frame {
-    HeaderBmp header;
-    DataBmp data;
-};
-
 // Callback do generowania ramki dla klienta
-typedef bool (*FrameGeneratorCallback)(Frame& frame, void* userData);
+typedef bool (*FrameGeneratorCallback)(FrameBmp& frame, void* userData);
 
 // Struktura klienta
 struct ClientConnection {
@@ -74,7 +68,7 @@ private:
     bool ReceiveCommand(SOCKET socket, FrameCmd& cmd);
     bool ReceiveMouseData(SOCKET socket, DataMouse& data);
     bool ReceiveKeyData(SOCKET socket, DataKey& data);
-    bool SendFrame(SOCKET socket, Frame& frame);
+    bool SendFrame(SOCKET socket, FrameBmp& frame);
     bool SendHeader(SOCKET socket, HeaderBmp& header);
     bool SendData(SOCKET socket, const char* data, int size);
     
@@ -85,7 +79,7 @@ private:
     bool ProcessKeyCommand(SOCKET socket, const FrameCmd& cmd);
     
     // Capture ekranu
-    bool CaptureScreen(Frame& frame);
+    bool CaptureScreen(FrameBmp& frame);
 
 public:
     RemoteServer(int _port = 8080);

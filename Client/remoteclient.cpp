@@ -160,7 +160,7 @@ bool RemoteClient::ReceiveData(char* buffer, int size) {
     return true;
 }
 
-bool RemoteClient::Get(Frame& frame) {
+bool RemoteClient::Get(FrameBmp& frame) {
     // DataBmp destruktor automatycznie zwolni stare dane
     
     FrameCmd cmd;
@@ -304,7 +304,7 @@ bool RemoteClient:: KeyUp(WORD virtualKey) {
 
 bool RemoteClient::FetchBitmap(HBITMAP& result)
 {
-    Frame frame;    
+    FrameBmp frame;
     if (Get(frame))
 	{
         if (hBitmap) {
@@ -320,7 +320,7 @@ bool RemoteClient::FetchBitmap(HBITMAP& result)
 	//InvalidateRect(GetActiveWindow(), NULL, TRUE);
 }
 
-HBITMAP RemoteClient::CreateBitmapFromFrame(Frame& frame) {
+HBITMAP RemoteClient::CreateBitmapFromFrame(FrameBmp& frame) {
     if (!frame.data.data || frame.header.length <= 0) {
         return NULL;
     }

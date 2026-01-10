@@ -1,6 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
-#include "..\Frame.h"
+#include "..\Shared\Frame.h"
 #include "RemoteClient.h"
 
 RemoteClient* g_client = NULL;

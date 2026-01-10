@@ -1,5 +1,5 @@
 #include "RemoteClient.h"
-#include "..\Frame.h"
+#include "..\Shared\Frame.h"
 #include <string.h>
 
 RemoteClient:: RemoteClient(const char* _host, int _port) {

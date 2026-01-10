@@ -2,7 +2,7 @@
 #define RemoteClientH
 
 #include <windows.h>
-#include "..\Frame.h"
+#include "..\Shared\Frame.h"
 
 class RemoteClient {
 private:  

@@ -3,7 +3,7 @@
 
 #include <windows.h>
 #include <winsock.h>
-#include "../Frame.h"
+#include "../Shared/Frame.h"
 
 #define MAX_CLIENTS 10
 

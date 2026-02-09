@@ -77,6 +77,7 @@ OS: Windows only (WinAPI, WinSock)
 
 ### Agent Notes and Constraints
 - Keep changes Windows-compatible (WinAPI/WinSock).
+- **API compatibility: use only APIs available on Windows 98** so the project runs on older machines. Do not use CRT “secure” functions (e.g. `strcat_s`, `strcpy_s`, `sprintf_s`) or other APIs introduced after Windows 98; use `strcat`, `strcpy`, `sprintf` etc. instead.
 - Avoid introducing new dependencies unless required.
 - Preserve binary protocol compatibility unless explicitly changing it.
 - Prefer small, localized edits; document any protocol changes clearly.

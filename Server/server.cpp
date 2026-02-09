@@ -1,15 +1,17 @@
 #include "RemoteServer.h"
+#include "Config.h"
 #include <stdio.h>
 #include <conio.h>
 
 int main() {
     printf("=== Remote Screen Server ===\n\n");
 
-    RemoteServer server(8080);
+    int port = LoadPortFromConfig();
+    RemoteServer server(port);
 
     if (!server.Start()) {
         printf("BLAD: Nie mozna uruchomic serwera!\n");
-        printf("Sprawdz czy port 8080 jest wolny.\n");
+        printf("Sprawdz czy port %d jest wolny.\n", port);
         return 1;
     }
     

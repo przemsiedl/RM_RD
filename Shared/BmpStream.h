@@ -10,13 +10,15 @@ struct ImageData
     int height;
     int bitsPerPixel;
     int stride;
-    DWORD dataSize;
-    BYTE* pData;
+    long dataSize;
+    char* pData;
     bool isFullFrame;  // true = pełny obraz, false = różnica XOR
+    bool isEmptyDiff;  // true = różnica XOR jest pusta
     
     // Konstruktor - inicjalizacja
-    ImageData() : width(0), height(0), bitsPerPixel(0), 
-                  stride(0), dataSize(0), pData(NULL), isFullFrame(true) {}
+    ImageData() : width(0), height(0), bitsPerPixel(0),
+                  stride(0), dataSize(0), pData(NULL),
+                  isFullFrame(true), isEmptyDiff(false) {}
     
     // Destruktor - automatyczne zwalnianie
     ~ImageData() 
@@ -53,29 +55,20 @@ public:
     BmpStream(int bpp = 24);
     ~BmpStream();
     
-    // Przechwytuje nowy obraz (automatycznie przesuwa current->previous)
+    void Reset();
     void Capture();
-    
-    // Oblicza różnicę między current i previous
-    // Jeśli brak poprzedniego - kopiuje pełny obraz current
-    void CalcDiff();
+    bool CalcDiff();
     
     // Zwraca obliczoną różnicę (NIE zwalniać - zarządzane przez klasę)
     // Wymaga wcześniejszego wywołania CalcDiff()
     const ImageData* GetDiff() const { return pDiff; }
-    
-    // Zwraca aktualny obraz (NIE zwalniać)
-    const ImageData* GetCurrent() const { return pCurrent; }
-    
-    // Zwraca poprzedni obraz (NIE zwalniać)
-    const ImageData* GetPrevious() const { return pPrevious; }
     
     // ===== SKŁADANIE OBRAZÓW (REKONSTRUKCJA Z RÓŻNIC) =====
     
     // Aplikuje różnicę XOR na istniejący bufor
     // target - bufor docelowy (zostanie zmodyfikowany)
     // diff - różnica do aplikacji
-    static bool ApplyDiffXOR(BYTE* target, const ImageData* diff);
+    static bool ApplyDiffXOR(char* target, const ImageData* diff);
 };
 
 #endif

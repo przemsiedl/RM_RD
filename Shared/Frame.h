@@ -15,7 +15,6 @@
 #define CMD_MOUSE_WHEEL         9
 #define CMD_KEY_DOWN            10
 #define CMD_KEY_UP              11
-#define CMD_KEY_PRESS           12
 
 // ===== RAMKA KOMENDY =====
 #pragma pack(push, 1)
@@ -63,14 +62,16 @@ struct DataKey {
 #pragma pack(pop)
 
 // Flagi dla HeaderBmp
-#define FRAME_FLAG_FULL      0x01  // Pe³na klatka (nie ró¿nica)
-#define FRAME_FLAG_DIFF      0x02  // Klatka ró¿nicowa
+#define FRAME_FLAG_FULL       0x01  // Peï¿½na klatka (nie rï¿½nica)
+#define FRAME_FLAG_DIFF       0x02  // Klatka rï¿½nicowa
+#define FRAME_FLAG_COMPRESSED 0x04  // Dane skompresowane
+#define FRAME_FLAG_NOCHANGE   0x08  // Brak zmian (brak payloadu)
 
-// ===== NAG£ÓWEK RAMKI OBRAZU =====
+// ===== NAGï¿½ï¿½WEK RAMKI OBRAZU =====
 #pragma pack(push, 1)
 struct HeaderBmp {
     char magic[3];
-	BYTE flags;
+	char flags;
     int x;
     int y;
     int width;
@@ -93,10 +94,10 @@ struct HeaderBmp {
 };
 #pragma pack(pop)
 
-// DataBmp - wrapper na dane obrazu (NIE zwalnia pamiêci)
+// DataBmp - wrapper na dane obrazu (NIE zwalnia pamiï¿½ci)
 struct DataBmp {
-    BYTE* data;
-    bool ownsData;  // Czy struktura jest w³aœcicielem pamiêci
+    char* data;
+    bool ownsData;  // Czy struktura jest wï¿½aï¿½cicielem pamiï¿½ci
     
     DataBmp() : data(NULL), ownsData(false) {
     }
@@ -107,18 +108,32 @@ struct DataBmp {
             data = NULL;
         }
     }
+
+    void Reset() {
+        if (data && ownsData) {
+            delete[] data;
+        }
+        data = NULL;
+        ownsData = false;
+    }
     
-    // Ustawia wskaŸnik BEZ przejmowania w³asnoœci
-    void SetReference(BYTE* pData) {
+    // Ustawia wskaï¿½nik BEZ przejmowania wï¿½asnoï¿½ci
+    void SetReference(char* pData) {
         if (data && ownsData) delete[] data;
         data = pData;
         ownsData = false;
     }
-    
-    // Alokuje w³asn¹ pamiêæ i kopiuje
-    void CopyData(const BYTE* pData, DWORD size) {
+
+    void SetReferenceWithOwn(char* pData) {
         if (data && ownsData) delete[] data;
-        data = new BYTE[size];
+        data = pData;
+        ownsData = true;
+    }
+    
+    // Alokuje wï¿½asnï¿½ pamiï¿½ï¿½ i kopiuje
+    void CopyData(const char* pData, int size) {
+        if (data && ownsData) delete[] data;
+        data = new char[size];
         CopyMemory(data, pData, size);
         ownsData = true;
     }

@@ -1,5 +1,6 @@
 #include "RemoteClient.h"
 #include "..\Shared\Frame.h"
+#include "..\Shared\Compression.h"
 #include <string.h>
 
 RemoteClient::RemoteClient(const char* _host, int _port) {
@@ -41,16 +42,6 @@ RemoteClient::~RemoteClient() {
     }
 
     WSACleanup();
-}
-
-void RemoteClient::Init()
-{
-    LPHOSTENT hostEntry = gethostbyname(host);
-    
-    if (! hostEntry || !hostEntry->h_addr_list || !hostEntry->h_addr_list[0]) {
-        // blad nie udalo sie rozwiazac nazwy
-        return;
-    }
 }
 
 bool RemoteClient::Connect() {
@@ -107,6 +98,26 @@ bool RemoteClient::IsConnected() const {
     return (socket != INVALID_SOCKET);
 }
 
+bool RemoteClient::ReceiveFrameHeader(HeaderBmp& header) {
+    int received = recv(socket, (char*)&header, sizeof(HeaderBmp), 0);
+    return (received == sizeof(HeaderBmp));
+}
+
+bool RemoteClient::ValidateFrameHeader(const HeaderBmp& header) const {
+    return (header.magic[0] == 'B' && header.magic[1] == 'M' && header.magic[2] == 'P');
+}
+
+bool RemoteClient::HandleNoChangeFrame(const HeaderBmp& header, HBITMAP& result) {
+    if ((header.flags & FRAME_FLAG_NOCHANGE) == 0) {
+        return false;
+    }
+    if (header.length != 0 || !hBitmap) {
+        return false;
+    }
+    result = hBitmap;
+    return true;
+}
+
 // ===== ZAPEWNIENIE BUFORA (ALOKACJA/REALOKACJA) =====
 bool RemoteClient::EnsureFrameBuffer(int width, int height, int bpp, int stride) {
     DWORD newSize = stride * height;
@@ -135,7 +146,7 @@ bool RemoteClient::EnsureFrameBuffer(int width, int height, int bpp, int stride)
         pFrameBuffer->bitsPerPixel = bpp;
         pFrameBuffer->stride = stride;
         pFrameBuffer->dataSize = newSize;
-        pFrameBuffer->pData = new BYTE[newSize];
+        pFrameBuffer->pData = new char[newSize];
         pFrameBuffer->isFullFrame = true;
         
         if (!pFrameBuffer->pData) {
@@ -151,73 +162,124 @@ bool RemoteClient::EnsureFrameBuffer(int width, int height, int bpp, int stride)
     return true;
 }
 
-// ===== ODBIERANIE DANYCH BEZPOŚREDNIO DO ImageData =====
-bool RemoteClient:: ReceiveImageData(ImageData* img, const HeaderBmp& header) {
+// ===== ODBIERANIE DANYCH BEZPOŚREDNIO DO ImageData (POPRAWIONE) =====
+bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
     if (!img || !img->pData || socket == INVALID_SOCKET) {
         return false;
     }
     
-    // Sprawdź flagę - pełna klatka czy różnica? 
+    // Sprawdź flagi
     bool isFullFrame = (header.flags & FRAME_FLAG_FULL) != 0;
+    bool isCompressed = (header.flags & FRAME_FLAG_COMPRESSED) != 0;
+    bool isNoChange = (header.flags & FRAME_FLAG_NOCHANGE) != 0;
+
+    if (isNoChange) {
+        if (header.length != 0) {
+            return false;
+        }
+        return true;
+    }
+
+    if (header.length <= 0) {
+        return false;
+    }
     
     // Alokuj tymczasowy bufor dla odebranych danych
-    BYTE* tempBuffer = new BYTE[header.length];
-    if (!tempBuffer) {
+    char* receivedBuffer = new char[header.length];
+    if (!receivedBuffer) {
         return false;
     }
     
     // Odbierz dane z sieci
     int totalReceived = 0;
-    while (totalReceived < header.length) {
+    while (totalReceived < header. length) {
         int received = recv(socket,
-                           (char*)(tempBuffer + totalReceived),
-                           header.length - totalReceived,
+                           receivedBuffer + totalReceived,
+                           header. length - totalReceived,
                            0);
         
         if (received <= 0) {
-            delete[] tempBuffer;
+            delete[] receivedBuffer;
             Disconnect();
             return false;
         }
         
         totalReceived += received;
     }
+
+    // ===== DEKOMPRESJA (jeśli dane są skompresowane) =====
+    char* workingBuffer = NULL;
+    int workingSize = 0;
     
-    // ===== APLIKUJ DANE NA BUFOR =====
-    if (isFullFrame) {
-        // Pełny obraz - skopiuj bezpośrednio
-        memcpy(img->pData, tempBuffer, img->dataSize);
-        img->isFullFrame = true;
-    } else {
-        // Różnica XOR - aplikuj przy użyciu BmpStream
-        int bytesPerPixel = img->bitsPerPixel / 8;
-        
-        for (int y = 0; y < img->height; y++) {
-            const BYTE* pRecvRow = tempBuffer + (y * img->stride);
-            BYTE* pBufferRow = img->pData + (y * img->stride);
-            
-            for (int x = 0; x < img->width; x++) {
-                int offset = x * bytesPerPixel;
-                
-                // XOR w miejscu
-                for (int i = 0; i < bytesPerPixel; i++) {
-                    pBufferRow[offset + i] ^= pRecvRow[offset + i];
-                }
-            }
+    if (isCompressed) {
+        // Alokuj bufor na zdekompresowane dane
+        workingBuffer = new char[img->dataSize];
+        if (! workingBuffer) {
+            delete[] receivedBuffer;
+            return false;
         }
         
+        // Dekompresuj
+        Compression::decrypt(receivedBuffer, header.length, workingBuffer, workingSize);
+        
+        // Sprawdź czy rozmiar się zgadza
+        if (workingSize != img->dataSize) {
+            delete[] receivedBuffer;
+            delete[] workingBuffer;
+            return false;
+        }
+    } else {
+        // Dane nieskompresowane - użyj bezpośrednio
+        workingBuffer = receivedBuffer;
+        workingSize = header.length;
+        if (workingSize != img->dataSize) {
+            delete[] receivedBuffer;
+            return false;
+        }
+    }
+
+    // ===== APLIKUJ DANE NA BUFOR =====
+    if (isFullFrame) {
+        // Pełna klatka - po prostu kopiuj
+        memcpy(img->pData, workingBuffer, img->dataSize);
+        img->isFullFrame = true;
+    } else {
+        // Różnica XOR - aplikuj w miejscu
+        ImageData diffView;
+        diffView.width = img->width;
+        diffView.height = img->height;
+        diffView.bitsPerPixel = img->bitsPerPixel;
+        diffView.stride = img->stride;
+        diffView.dataSize = img->dataSize;
+        diffView.pData = workingBuffer;
+        diffView.isFullFrame = false;
+        diffView.isEmptyDiff = false;
+
+        if (!BmpStream::ApplyDiffXOR(img->pData, &diffView)) {
+            diffView.pData = NULL;
+            delete[] receivedBuffer;
+            if (isCompressed) {
+                delete[] workingBuffer;
+            }
+            return false;
+        }
+
+        diffView.pData = NULL;
         img->isFullFrame = false;
     }
     
-    // Zwolnij tymczasowy bufor
-    delete[] tempBuffer;
+    // Zwolnij bufory
+    delete[] receivedBuffer;
+    if (isCompressed) {
+        delete[] workingBuffer;
+    }
     
     return true;
 }
 
 // ===== WYSYŁANIE KOMENDY =====
 bool RemoteClient::SendCommand(const FrameCmd& cmd, const void* data, int dataSize) {
-    if (!Connect()) return false;
+    if (! Connect()) return false;
 
     // Wyslij naglowek komendy
     FrameCmd sendCmd = cmd;
@@ -251,21 +313,26 @@ bool RemoteClient::FetchBitmap(HBITMAP& result) {
     
     // Odbierz nagłówek
     HeaderBmp header;
-    int received = recv(socket, (char*)&header, sizeof(HeaderBmp), 0);
-    if (received != sizeof(HeaderBmp)) {
+    if (!ReceiveFrameHeader(header)) {
         Disconnect();
         return false;
     }
     
     // Weryfikuj magic
-    if (header.magic[0] != 'B' || header.magic[1] != 'M' || header.magic[2] != 'P') {
+    if (!ValidateFrameHeader(header)) {
         return false;
     }
     
     // Zapewnij bufor odpowiedniego rozmiaru
-    if (!EnsureFrameBuffer(header. width, header.height, 
+    if (!EnsureFrameBuffer(header.width, header.height, 
                           header.bitsPerPixel, header.stride)) {
         return false;
+    }
+
+    if (HandleNoChangeFrame(header, result)) {
+        remoteScreenWidth = pFrameBuffer->width;
+        remoteScreenHeight = pFrameBuffer->height;
+        return true;
     }
     
     // Odbierz dane bezpośrednio do bufora
@@ -371,7 +438,7 @@ bool RemoteClient::MouseRightUp(int x, int y) {
 
 bool RemoteClient:: MouseMiddleDown(int x, int y) {
     FrameCmd cmd;
-    cmd. cmd = CMD_MOUSE_MIDDLE_DOWN;
+    cmd.cmd = CMD_MOUSE_MIDDLE_DOWN;
     
     DataMouse data;
     data.x = x;
@@ -380,9 +447,9 @@ bool RemoteClient:: MouseMiddleDown(int x, int y) {
     return SendCommand(cmd, &data, sizeof(DataMouse));
 }
 
-bool RemoteClient:: MouseMiddleUp(int x, int y) {
+bool RemoteClient::MouseMiddleUp(int x, int y) {
     FrameCmd cmd;
-    cmd. cmd = CMD_MOUSE_MIDDLE_UP;
+    cmd.cmd = CMD_MOUSE_MIDDLE_UP;
     
     DataMouse data;
     data.x = x;
@@ -391,7 +458,7 @@ bool RemoteClient:: MouseMiddleUp(int x, int y) {
     return SendCommand(cmd, &data, sizeof(DataMouse));
 }
 
-bool RemoteClient:: MouseWheel(int x, int y, int delta) {
+bool RemoteClient::MouseWheel(int x, int y, int delta) {
     FrameCmd cmd;
     cmd.cmd = CMD_MOUSE_WHEEL;
     

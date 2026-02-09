@@ -1,8 +1,9 @@
 #include "RemoteServer.h"
+#include "../Shared/Compression.h"
 #include <stdio.h>
 
 // ===== KONSTRUKTOR =====
-RemoteServer:: RemoteServer(int _port) {
+RemoteServer::  RemoteServer(int _port) {
     port = _port;
     listenSocket = INVALID_SOCKET;
     running = false;
@@ -23,7 +24,7 @@ RemoteServer:: RemoteServer(int _port) {
 }
 
 // ===== DESTRUKTOR =====
-RemoteServer::~RemoteServer() {
+RemoteServer:: ~RemoteServer() {
     Stop();
     
     // Zwolnij BmpStream
@@ -37,7 +38,7 @@ RemoteServer::~RemoteServer() {
 }
 
 // ===== INICJALIZACJA SOCKETU =====
-bool RemoteServer::InitializeSocket() {
+bool RemoteServer:: InitializeSocket() {
     listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listenSocket == INVALID_SOCKET) {
         return false;
@@ -48,7 +49,7 @@ bool RemoteServer::InitializeSocket() {
     
     SOCKADDR_IN serverAddr;
     serverAddr.sin_family = AF_INET;
-    serverAddr. sin_port = htons(port);
+    serverAddr.  sin_port = htons(port);
     serverAddr.sin_addr.s_addr = INADDR_ANY;
     
     if (bind(listenSocket, (PSOCKADDR)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
@@ -97,7 +98,7 @@ bool RemoteServer::Start() {
 }
 
 // ===== ZATRZYMANIE SERWERA =====
-void RemoteServer:: Stop() {
+void RemoteServer::Stop() {
     if (!running) {
         return;
     }
@@ -113,7 +114,7 @@ void RemoteServer:: Stop() {
     }
 }
 
-// ===== WĄTEK NASŁUCHUJĄCY =====
+// WĄTEK NASŁUCHUJĄCY =====
 DWORD WINAPI RemoteServer::ListenThreadProc(LPVOID param) {
     RemoteServer* server = (RemoteServer*)param;
     server->ListenLoop();
@@ -134,7 +135,7 @@ void RemoteServer::ListenLoop() {
         if (AcceptClient(client)) {
             client->thread = CreateThread(NULL, 0, ClientThreadProc, client, 0, &client->threadId);
             
-            if (! client->thread) {
+            if (!  client->thread) {
                 DisconnectClient(client);
             }
         }
@@ -169,6 +170,9 @@ bool RemoteServer::AcceptClient(ClientConnection* client) {
 DWORD WINAPI RemoteServer::ClientThreadProc(LPVOID param) {
     ClientConnection* client = (ClientConnection*)param;
     RemoteServer* server = (RemoteServer*)client->userData;
+    
+    BmpStream* pBmpStream = server->pBmpStream;
+    pBmpStream->Reset();
     
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (&server->clients[i] == client) {
@@ -225,16 +229,15 @@ bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
         case CMD_MOUSE_RIGHT_DOWN:
         case CMD_MOUSE_RIGHT_UP:
         case CMD_MOUSE_MIDDLE_DOWN:
-        case CMD_MOUSE_MIDDLE_UP: 
-        case CMD_MOUSE_WHEEL: 
+        case CMD_MOUSE_MIDDLE_UP:  
+        case CMD_MOUSE_WHEEL:  
             return ProcessMouseCommand(socket, cmd);
         
         case CMD_KEY_DOWN:
-        case CMD_KEY_UP: 
-        case CMD_KEY_PRESS:
+        case CMD_KEY_UP:
             return ProcessKeyCommand(socket, cmd);
         
-        default: 
+        default:  
             return false;
     }
 }
@@ -258,15 +261,14 @@ bool RemoteServer::HandleGetFrame(SOCKET socket) {
     return result;
 }
 
-// ===== KONWERSJA ImageData -> FrameBmp (ZAKTUALIZOWANE) =====
+// ===== KONWERSJA ImageData -> FrameBmp (POPRAWIONE) =====
 void RemoteServer::ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame) {
     frame.header.x = 0;
     frame.header. y = 0;
     frame.header.width = img->width;
     frame.header.height = img->height;
     frame.header.bitsPerPixel = img->bitsPerPixel;
-    frame.header.stride = img->stride;
-    frame.header.length = img->dataSize;
+    frame. header.stride = img->stride;
     
     // ===== UŻYJ isFullFrame Z ImageData =====
     if (img->isFullFrame) {
@@ -274,9 +276,27 @@ void RemoteServer::ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame) {
     } else {
         frame.header. flags = FRAME_FLAG_DIFF;
     }
+
+    // ===== PUSTA RÓŻNICA =====
+    if (!img->isFullFrame && img->isEmptyDiff) {
+        frame.header.flags |= FRAME_FLAG_NOCHANGE;
+        frame.header.length = 0;
+        frame.data.Reset();
+        return;
+    }
     
-    // Użyj SetReference - BEZ kopiowania danych
-    frame.data.SetReference(img->pData);
+    // ===== KOMPRESJA DANYCH =====
+    // Alokuj bufor na skompresowane dane (maksymalnie taki sam rozmiar + zapas)
+    int maxCompressedSize = img->dataSize + 1024;  // Zapas na header kompresji
+    char* compressedData = new char[maxCompressedSize];
+    int compressedSize = 0;
+    
+    Compression::encrypt(img->pData, img->dataSize, compressedData, compressedSize);
+    
+    // Ustaw dane i flagę kompresji
+    frame.data. SetReferenceWithOwn(compressedData);
+    frame.header.flags |= FRAME_FLAG_COMPRESSED;
+    frame.header.length = compressedSize;
 }
 
 // ===== CAPTURE EKRANU (używa BmpStream) =====
@@ -285,19 +305,14 @@ bool RemoteServer::CaptureScreen(FrameBmp& frame) {
         return false;
     }
     
-    // Przechwyt nowego obrazu
     pBmpStream->Capture();
-    
-    // Oblicz różnicę
     pBmpStream->CalcDiff();
     
-    // Pobierz różnicę
     const ImageData* diff = pBmpStream->GetDiff();
-    if (!diff || ! diff->pData) {
+    if (!diff || !  diff->pData) {
         return false;
     }
     
-    // Konwertuj do FrameBmp (bez kopiowania!)
     ImageDataToFrameBmp(diff, frame);
     
     return true;
@@ -310,7 +325,7 @@ bool RemoteServer::SendFrame(SOCKET socket, FrameBmp& frame) {
     }
     
     if (frame.header.length > 0 && frame.data.data) {
-        if (!SendData(socket, frame.data.data, frame.header.length)) {
+        if (!SendData(socket, frame.data. data, frame.header.length)) {
             return false;
         }
     }
@@ -325,15 +340,15 @@ bool RemoteServer::SendHeader(SOCKET socket, HeaderBmp& header) {
 }
 
 // ===== WYSYŁANIE DANYCH =====
-bool RemoteServer::SendData(SOCKET socket, const BYTE* data, int size) {
-    if (! data || size <= 0) {
+bool RemoteServer::SendData(SOCKET socket, const char* data, int size) {
+    if (!  data || size <= 0) {
         return true;
     }
     
     int totalSent = 0;
     
     while (totalSent < size) {
-        int sent = send(socket, (const char*)(data + totalSent), size - totalSent, 0);
+        int sent = send(socket, data + totalSent, size - totalSent, 0);
         
         if (sent <= 0) {
             return false;
@@ -387,8 +402,8 @@ int RemoteServer::FindFreeClientSlot() {
     
     int index = -1;
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (!clients[i]. active) {
-            clients[i]. userData = this;
+        if (!clients[i].  active) {
+            clients[i].  userData = this;
             index = i;
             break;
         }
@@ -456,7 +471,7 @@ bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
     
     int absX = (data.x * 65535) / screenWidth;
-    int absY = (data. y * 65535) / screenHeight;
+    int absY = (data.  y * 65535) / screenHeight;
     
     DWORD flags = MOUSEEVENTF_ABSOLUTE;
     
@@ -471,17 +486,17 @@ bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
             mouse_event(flags, absX, absY, 0, 0);
             break;
         
-        case CMD_MOUSE_LEFT_UP:
+        case CMD_MOUSE_LEFT_UP: 
             flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP;
             mouse_event(flags, absX, absY, 0, 0);
             break;
         
-        case CMD_MOUSE_RIGHT_DOWN: 
+        case CMD_MOUSE_RIGHT_DOWN:  
             flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_RIGHTDOWN;
             mouse_event(flags, absX, absY, 0, 0);
             break;
         
-        case CMD_MOUSE_RIGHT_UP:
+        case CMD_MOUSE_RIGHT_UP: 
             flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_RIGHTUP;
             mouse_event(flags, absX, absY, 0, 0);
             break;
@@ -514,18 +529,12 @@ bool RemoteServer::ProcessKeyCommand(SOCKET socket, const FrameCmd& cmd) {
     }
     
     switch (cmd.cmd) {
-        case CMD_KEY_DOWN: 
+        case CMD_KEY_DOWN:
             keybd_event(data.virtualKey, data.scanCode, 0, 0);
             break;
         
-        case CMD_KEY_UP: 
-            keybd_event(data. virtualKey, data.scanCode, KEYEVENTF_KEYUP, 0);
-            break;
-        
-        case CMD_KEY_PRESS:
-            keybd_event(data.virtualKey, data.scanCode, 0, 0);
-            Sleep(50);
-            keybd_event(data.virtualKey, data.scanCode, KEYEVENTF_KEYUP, 0);
+        case CMD_KEY_UP:
+            keybd_event(data.  virtualKey, data.scanCode, KEYEVENTF_KEYUP, 0);
             break;
     }
     

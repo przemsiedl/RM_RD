@@ -74,7 +74,7 @@ private:
     bool ReceiveKeyData(SOCKET socket, DataKey& data);
     bool SendFrame(SOCKET socket, FrameBmp& frame);
     bool SendHeader(SOCKET socket, HeaderBmp& header);
-    bool SendData(SOCKET socket, const BYTE* data, int size);
+    bool SendData(SOCKET socket, const char* data, int size);
     
     // Obsluga komend
     bool ProcessCommand(SOCKET socket, FrameCmd& cmd);

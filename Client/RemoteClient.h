@@ -20,6 +20,9 @@ private:
     void Disconnect();
     
     bool SendCommand(const FrameCmd& cmd, const void* data = NULL, int dataSize = 0);
+    bool ReceiveFrameHeader(HeaderBmp& header);
+    bool ValidateFrameHeader(const HeaderBmp& header) const;
+    bool HandleNoChangeFrame(const HeaderBmp& header, HBITMAP& result);
     bool ReceiveImageData(ImageData* img, const HeaderBmp& header);
     
     HBITMAP CreateBitmapFromImageData(const ImageData* img);
@@ -34,7 +37,6 @@ public:
     int remoteScreenWidth;
     int remoteScreenHeight;
 
-    void Init();
     bool IsConnected() const;
     bool FetchBitmap(HBITMAP& result);
     

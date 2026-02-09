@@ -17,19 +17,9 @@ int main() {
     printf("Czekam na polaczenia...\n");
     printf("\nNacisnij ESC aby zatrzymac serwer.\n\n");
 
-    // G³ówna pêtla - wyœwietlaj statystyki
     int lastCount = -1;
     
     while (true) {
-        // SprawdŸ klawisz ESC
-        /*
-        if (_kbhit()) {
-            int key = _getch();
-            if (key == 27) {  // ESC
-                break;
-            }
-        } */
-        
         int currentCount = server.GetClientCount();
         
         if (currentCount != lastCount) {

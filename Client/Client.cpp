@@ -56,9 +56,9 @@ void DrawStatusText(HDC hdc, HWND hwnd) {
                              CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
                              DEFAULT_PITCH | FF_SWISS, "Arial");
     HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-    
+
     TextOut(hdc, 10, 10, statusText, strlen(statusText));
-    
+
     SelectObject(hdc, hOldFont);
     DeleteObject(hFont);
 }
@@ -69,7 +69,6 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
     switch (message) {
         case WM_CREATE:  {
             g_client = new RemoteClient("192.168.1.10", 8080);
-            g_client->Init();
 
             HBITMAP hBitmap = NULL;
             if (g_client->FetchBitmap(hBitmap)) {
@@ -239,26 +238,6 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
             g_client->MouseMove(remoteX, remoteY);
             break;
         }
-              /*
-        case WM_MOUSEWHEEL: {
-            if (! g_client) break;
-
-            int delta = (short)HIWORD(wParam);  // Poprawione dla NT4. 0
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-
-            // Przelicz wspolrzedne ekranowe na klienckie
-            POINT pt;
-            pt.x = localX;
-            pt.y = localY;
-            ScreenToClient(hwnd, &pt);
-
-            LocalToRemoteCoords(hwnd, pt.x, pt.y, remoteX, remoteY);
-            g_client->MouseWheel(remoteX, remoteY, delta);
-            break;
-        }   */
-
         case WM_SYSKEYDOWN:    // Dla Alt + klawisz
         case WM_KEYDOWN:  {
             if (!g_client) break;

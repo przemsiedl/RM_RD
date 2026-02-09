@@ -1,9 +1,11 @@
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 #include "..\Shared\Frame.h"
 #include "RemoteClient.h"
 #include "InputSender.h"
 #include "ClientInputHandler.h"
+#include "ClientArgs.h"
 
 RemoteClient* g_client = NULL;
 InputSender* g_inputSender = NULL;
@@ -53,7 +55,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                                   WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_CREATE:  {
-            g_client = new RemoteClient("192.168.1.10", 8080);
+            g_client = new RemoteClient(g_serverHost, g_serverPort);
             g_inputSender = new InputSender(g_client);
             g_inputHandler = new ClientInputHandler(g_client, g_inputSender);
 
@@ -209,7 +211,15 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
 
 // Glowna funkcja
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
-                   LPSTR args, int nShowCmd) {
+                   LPSTR lpCmdLine, int nShowCmd) {
+    if (!ParseCommandLine(lpCmdLine)) {
+        MessageBox(NULL,
+            "Uzycie: Client.exe <host> [port]\n\n"
+            "Np. Client.exe 192.168.1.10 8080",
+            "Remote Screen Viewer", MB_ICONINFORMATION);
+        return 0;
+    }
+
     char* klasaOkna = "RemoteViewerClass";
     
     WNDCLASS wc = {0};

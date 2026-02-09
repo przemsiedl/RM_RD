@@ -1,5 +1,5 @@
 #include "RemoteServer.h"
-#include "../Shared/Compression.h"
+#include "InputExecutor.h"
 #include <stdio.h>
 
 // ===== KONSTRUKTOR =====
@@ -9,11 +9,9 @@ RemoteServer::  RemoteServer(int _port) {
     running = false;
     listenThread = NULL;
     listenThreadId = 0;
-    frameCallback = NULL;
-    callbackUserData = NULL;
     
-    // Utworz BmpStream (24 bpp dla wydajnosci)
-    pBmpStream = new BmpStream(24);
+    // Utworz FrameProvider (24 bpp dla wydajnosci)
+    frameProvider = new FrameProvider(24);
     
     // Inicjalizacja sekcji krytycznej
     InitializeCriticalSection(&clientsSection);
@@ -28,9 +26,9 @@ RemoteServer:: ~RemoteServer() {
     Stop();
     
     // Zwolnij BmpStream
-    if (pBmpStream) {
-        delete pBmpStream;
-        pBmpStream = NULL;
+    if (frameProvider) {
+        delete frameProvider;
+        frameProvider = NULL;
     }
     
     DeleteCriticalSection(&clientsSection);
@@ -171,8 +169,9 @@ DWORD WINAPI RemoteServer::ClientThreadProc(LPVOID param) {
     ClientConnection* client = (ClientConnection*)param;
     RemoteServer* server = (RemoteServer*)client->userData;
     
-    BmpStream* pBmpStream = server->pBmpStream;
-    pBmpStream->Reset();
+    if (server->frameProvider) {
+        server->frameProvider->Reset();
+    }
     
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (&server->clients[i] == client) {
@@ -246,76 +245,13 @@ bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
 bool RemoteServer::HandleGetFrame(SOCKET socket) {
     FrameBmp frame;
     
-    if (frameCallback) {
-        if (!frameCallback(frame, callbackUserData)) {
-            return false;
-        }
-    } else {
-        if (!CaptureScreen(frame)) {
-            return false;
-        }
+    if (!frameProvider || !frameProvider->GetFrame(frame)) {
+        return false;
     }
     
     bool result = SendFrame(socket, frame);
     
     return result;
-}
-
-// ===== KONWERSJA ImageData -> FrameBmp (POPRAWIONE) =====
-void RemoteServer::ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame) {
-    frame.header.x = 0;
-    frame.header. y = 0;
-    frame.header.width = img->width;
-    frame.header.height = img->height;
-    frame.header.bitsPerPixel = img->bitsPerPixel;
-    frame. header.stride = img->stride;
-    
-    // ===== UŻYJ isFullFrame Z ImageData =====
-    if (img->isFullFrame) {
-        frame.header.flags = FRAME_FLAG_FULL;
-    } else {
-        frame.header. flags = FRAME_FLAG_DIFF;
-    }
-
-    // ===== PUSTA RÓŻNICA =====
-    if (!img->isFullFrame && img->isEmptyDiff) {
-        frame.header.flags |= FRAME_FLAG_NOCHANGE;
-        frame.header.length = 0;
-        frame.data.Reset();
-        return;
-    }
-    
-    // ===== KOMPRESJA DANYCH =====
-    // Alokuj bufor na skompresowane dane (maksymalnie taki sam rozmiar + zapas)
-    int maxCompressedSize = img->dataSize + 1024;  // Zapas na header kompresji
-    char* compressedData = new char[maxCompressedSize];
-    int compressedSize = 0;
-    
-    Compression::encrypt(img->pData, img->dataSize, compressedData, compressedSize);
-    
-    // Ustaw dane i flagę kompresji
-    frame.data. SetReferenceWithOwn(compressedData);
-    frame.header.flags |= FRAME_FLAG_COMPRESSED;
-    frame.header.length = compressedSize;
-}
-
-// ===== CAPTURE EKRANU (używa BmpStream) =====
-bool RemoteServer::CaptureScreen(FrameBmp& frame) {
-    if (!pBmpStream) {
-        return false;
-    }
-    
-    pBmpStream->Capture();
-    pBmpStream->CalcDiff();
-    
-    const ImageData* diff = pBmpStream->GetDiff();
-    if (!diff || !  diff->pData) {
-        return false;
-    }
-    
-    ImageDataToFrameBmp(diff, frame);
-    
-    return true;
 }
 
 // ===== WYSYŁANIE RAMKI =====
@@ -443,8 +379,9 @@ int RemoteServer::GetClientCount() {
 
 // ===== USTAWIENIE CALLBACKA =====
 void RemoteServer::SetFrameGenerator(FrameGeneratorCallback callback, void* userData) {
-    frameCallback = callback;
-    callbackUserData = userData;
+    if (frameProvider) {
+        frameProvider->SetFrameGenerator(callback, userData);
+    }
 }
 
 // ===== ODBIERANIE DANYCH MYSZY =====
@@ -467,57 +404,7 @@ bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
         return false;
     }
     
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    
-    int absX = (data.x * 65535) / screenWidth;
-    int absY = (data.  y * 65535) / screenHeight;
-    
-    DWORD flags = MOUSEEVENTF_ABSOLUTE;
-    
-    switch (cmd.cmd) {
-        case CMD_MOUSE_MOVE:
-            flags |= MOUSEEVENTF_MOVE;
-            mouse_event(flags, absX, absY, 0, 0);
-            break;
-        
-        case CMD_MOUSE_LEFT_DOWN:
-            flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN;
-            mouse_event(flags, absX, absY, 0, 0);
-            break;
-        
-        case CMD_MOUSE_LEFT_UP: 
-            flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP;
-            mouse_event(flags, absX, absY, 0, 0);
-            break;
-        
-        case CMD_MOUSE_RIGHT_DOWN:  
-            flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_RIGHTDOWN;
-            mouse_event(flags, absX, absY, 0, 0);
-            break;
-        
-        case CMD_MOUSE_RIGHT_UP: 
-            flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_RIGHTUP;
-            mouse_event(flags, absX, absY, 0, 0);
-            break;
-        
-        case CMD_MOUSE_MIDDLE_DOWN:
-            flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_MIDDLEDOWN;
-            mouse_event(flags, absX, absY, 0, 0);
-            break;
-        
-        case CMD_MOUSE_MIDDLE_UP:
-            flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_MIDDLEUP;
-            mouse_event(flags, absX, absY, 0, 0);
-            break;
-        
-        case CMD_MOUSE_WHEEL:
-            flags |= MOUSEEVENTF_WHEEL;
-            mouse_event(flags, absX, absY, data.wheelDelta, 0);
-            break;
-    }
-    
-    return true;
+    return InputExecutor::ExecuteMouseCommand(cmd, data);
 }
 
 // ===== OBSŁUGA KOMEND KLAWIATURY =====
@@ -528,15 +415,5 @@ bool RemoteServer::ProcessKeyCommand(SOCKET socket, const FrameCmd& cmd) {
         return false;
     }
     
-    switch (cmd.cmd) {
-        case CMD_KEY_DOWN:
-            keybd_event(data.virtualKey, data.scanCode, 0, 0);
-            break;
-        
-        case CMD_KEY_UP:
-            keybd_event(data.  virtualKey, data.scanCode, KEYEVENTF_KEYUP, 0);
-            break;
-    }
-    
-    return true;
+    return InputExecutor::ExecuteKeyCommand(cmd, data);
 }

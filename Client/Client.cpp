@@ -2,30 +2,15 @@
 #include <stdio.h>
 #include "..\Shared\Frame.h"
 #include "RemoteClient.h"
+#include "InputSender.h"
+#include "ClientInputHandler.h"
 
 RemoteClient* g_client = NULL;
+InputSender* g_inputSender = NULL;
+ClientInputHandler* g_inputHandler = NULL;
 HBITMAP g_hBitmap = NULL;
 DWORD g_lastFrameTime = 0;
 DWORD g_frameCount = 0;
-
-// Konwersja wspolrzednych lokalnych na zdalne
-void LocalToRemoteCoords(HWND hwnd, int localX, int localY, int& remoteX, int& remoteY) {
-    if (g_client->remoteScreenWidth == 0 || g_client->remoteScreenHeight == 0) {
-        remoteX = localX;
-        remoteY = localY;
-        return;
-    }
-
-    RECT clientRect;
-    GetClientRect(hwnd, &clientRect);
-
-    int clientWidth = clientRect.right - clientRect.left;
-    int clientHeight = clientRect.bottom - clientRect.top;
-
-    // Przeskaluj wspolrzedne
-    remoteX = (localX * g_client->remoteScreenWidth) / clientWidth;
-    remoteY = (localY * g_client->remoteScreenHeight) / clientHeight;
-}
 
 // Rysowanie tekstu z informacjami
 void DrawStatusText(HDC hdc, HWND hwnd) {
@@ -69,6 +54,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
     switch (message) {
         case WM_CREATE:  {
             g_client = new RemoteClient("192.168.1.10", 8080);
+            g_inputSender = new InputSender(g_client);
+            g_inputHandler = new ClientInputHandler(g_client, g_inputSender);
 
             HBITMAP hBitmap = NULL;
             if (g_client->FetchBitmap(hBitmap)) {
@@ -146,6 +133,16 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                 g_hBitmap = NULL;
             }
             
+            if (g_inputHandler) {
+                delete g_inputHandler;
+                g_inputHandler = NULL;
+            }
+
+            if (g_inputSender) {
+                delete g_inputSender;
+                g_inputSender = NULL;
+            }
+
             if (g_client) {
                 delete g_client;
                 g_client = NULL;
@@ -155,87 +152,16 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
             break;
         }
         
-        case WM_LBUTTONDOWN: {
-            if (! g_client) break;
-            
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-            
-            LocalToRemoteCoords(hwnd, localX, localY, remoteX, remoteY);
-            g_client->MouseLeftDown(remoteX, remoteY);
-            break;
-        }
-        
-        case WM_LBUTTONUP: {
-            if (!g_client) break;
-            
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-            
-            LocalToRemoteCoords(hwnd, localX, localY, remoteX, remoteY);
-            g_client->MouseLeftUp(remoteX, remoteY);
-            break;
-        }
-        
-        case WM_RBUTTONDOWN:  {
-            if (!g_client) break;
-            
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-            
-            LocalToRemoteCoords(hwnd, localX, localY, remoteX, remoteY);
-            g_client->MouseRightDown(remoteX, remoteY);
-            break;
-        }
-        
-        case WM_RBUTTONUP: {
-            if (!g_client) break;
-            
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-            
-            LocalToRemoteCoords(hwnd, localX, localY, remoteX, remoteY);
-            g_client->MouseRightUp(remoteX, remoteY);
-            break;
-        }
-        
-        case WM_MBUTTONDOWN: {
-            if (! g_client) break;
-            
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-            
-            LocalToRemoteCoords(hwnd, localX, localY, remoteX, remoteY);
-            g_client->MouseMiddleDown(remoteX, remoteY);
-            break;
-        }
-        
-        case WM_MBUTTONUP:  {
-            if (!g_client) break;
-            
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-            
-            LocalToRemoteCoords(hwnd, localX, localY, remoteX, remoteY);
-            g_client->MouseMiddleUp(remoteX, remoteY);
-            break;
-        }
-        
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
         case WM_MOUSEMOVE: {
-            if (! g_client) break;
-            
-            int localX = LOWORD(lParam);
-            int localY = HIWORD(lParam);
-            int remoteX, remoteY;
-            
-            LocalToRemoteCoords(hwnd, localX, localY, remoteX, remoteY);
-            g_client->MouseMove(remoteX, remoteY);
+            if (g_inputHandler) {
+                g_inputHandler->HandleMessage(hwnd, message, wParam, lParam);
+            }
             break;
         }
         case WM_SYSKEYDOWN:    // Dla Alt + klawisz
@@ -259,15 +185,18 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                 PostMessage(hwnd, WM_CLOSE, 0, 0);
                 break;
             }
-            
-            g_client->KeyDown((WORD)wParam);
+
+            if (g_inputHandler) {
+                g_inputHandler->HandleMessage(hwnd, message, wParam, lParam);
+            }
             break;
         }
         
         case WM_SYSKEYUP:    // Dla Alt + klawisz
         case WM_KEYUP: {
-            if (! g_client) break;
-            g_client->KeyUp((WORD)wParam);
+            if (g_inputHandler) {
+                g_inputHandler->HandleMessage(hwnd, message, wParam, lParam);
+            }
             break;
         }
         

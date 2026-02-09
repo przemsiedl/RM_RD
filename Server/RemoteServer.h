@@ -4,12 +4,9 @@
 #include <windows.h>
 #include <winsock.h>
 #include "../Shared/Frame.h"
-#include "../Shared/BmpStream.h"
+#include "FrameProvider.h"
 
 #define MAX_CLIENTS 10
-
-// Callback do generowania ramki dla klienta
-typedef bool (*FrameGeneratorCallback)(FrameBmp& frame, void* userData);
 
 // Struktura klienta
 struct ClientConnection {
@@ -38,12 +35,8 @@ private:
     HANDLE listenThread;
     DWORD listenThreadId;
     
-    // BmpStream do przechwytywania ekranu
-    BmpStream* pBmpStream;
-    
-    // Callback do generowania ramek
-    FrameGeneratorCallback frameCallback;
-    void* callbackUserData;
+    // Provider ramek
+    FrameProvider* frameProvider;
     
     // Lista klientow
     ClientConnection clients[MAX_CLIENTS];
@@ -82,10 +75,6 @@ private:
     bool ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd);
     bool ProcessKeyCommand(SOCKET socket, const FrameCmd& cmd);
     
-    // Capture ekranu
-    bool CaptureScreen(FrameBmp& frame);
-    void ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame);
-
 public:
     RemoteServer(int _port = 8080);
     ~RemoteServer();

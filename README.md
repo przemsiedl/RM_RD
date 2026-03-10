@@ -50,7 +50,7 @@ Klient:
 
 ## Uwagi o buildzie
 
-W aktualnym snapshotcie repo widoczne sa pliki zrodlowe i skrypty `.bat`. Dedykowane pliki projektu IDE nie sa obecne w workspace, wiec instrukcje kompilacji trzeba doprecyzowac po odtworzeniu lub wskazaniu uzywanego toolchaina.
+W aktualnym snapshotcie repo widoczne sa pliki zrodlowe i skrypty `.bat`. Dedykowane pliki projektu IDE nie sa obecne w workspace, wiec instrukcje kompilacji trzeba doprecyzowac po odtworzeniu lub wskazaniu uzywanego toolchaina. Przy budowaniu Client i Server dodaj `Shared/SocketIo.cpp` do kompilacji.
 
 ## Najwazniejsze cechy projektu
 

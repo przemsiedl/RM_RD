@@ -1,6 +1,7 @@
 #include "RemoteClient.h"
 #include "..\Shared\Frame.h"
 #include "..\Shared\Compression.h"
+#include "..\Shared\SocketIo.h"
 #include <string.h>
 
 RemoteClient::RemoteClient(const char* _host, int _port) {
@@ -99,8 +100,7 @@ bool RemoteClient::IsConnected() const {
 }
 
 bool RemoteClient::ReceiveFrameHeader(HeaderBmp& header) {
-    int received = recv(socket, (char*)&header, sizeof(HeaderBmp), 0);
-    return (received == sizeof(HeaderBmp));
+    return SocketIo::RecvAll(socket, (char*)&header, sizeof(HeaderBmp));
 }
 
 bool RemoteClient::ValidateFrameHeader(const HeaderBmp& header) const {
@@ -190,21 +190,10 @@ bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
         return false;
     }
     
-    // Odbierz dane z sieci
-    int totalReceived = 0;
-    while (totalReceived < header. length) {
-        int received = recv(socket,
-                           receivedBuffer + totalReceived,
-                           header. length - totalReceived,
-                           0);
-        
-        if (received <= 0) {
-            delete[] receivedBuffer;
-            Disconnect();
-            return false;
-        }
-        
-        totalReceived += received;
+    if (!SocketIo::RecvAll(socket, receivedBuffer, header.length)) {
+        delete[] receivedBuffer;
+        Disconnect();
+        return false;
     }
 
     // ===== DEKOMPRESJA (jeśli dane są skompresowane) =====
@@ -279,25 +268,21 @@ bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
 
 // ===== WYSYŁANIE KOMENDY =====
 bool RemoteClient::SendCommand(const FrameCmd& cmd, const void* data, int dataSize) {
-    if (! Connect()) return false;
+    if (!Connect()) return false;
 
-    // Wyslij naglowek komendy
     FrameCmd sendCmd = cmd;
     sendCmd.length = dataSize;
-    
-    if (send(socket, (char*)&sendCmd, sizeof(FrameCmd), 0) != sizeof(FrameCmd)) {
+
+    if (!SocketIo::SendAll(socket, (char*)&sendCmd, sizeof(FrameCmd))) {
         Disconnect();
         return false;
     }
-
-    // Wyslij dane (jesli sa)
     if (dataSize > 0 && data) {
-        if (send(socket, (const char*)data, dataSize, 0) != dataSize) {
+        if (!SocketIo::SendAll(socket, (const char*)data, dataSize)) {
             Disconnect();
             return false;
         }
     }
-
     return true;
 }
 

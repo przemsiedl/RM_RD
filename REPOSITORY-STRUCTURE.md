@@ -48,7 +48,9 @@ Najwazniejsze pliki:
 - `Shared/BmpStream.h`
 - `Shared/BmpStream.cpp` - zrzut ekranu i roznice XOR,
 - `Shared/Compression.h`
-- `Shared/Compression.cpp` - kompresja i dekompresja.
+- `Shared/Compression.cpp` - kompresja i dekompresja,
+- `Shared/SocketIo.h`
+- `Shared/SocketIo.cpp` - SendAll/RecvAll dla pelnych transferow TCP.
 
 ### `Tests/`
 

@@ -1,5 +1,6 @@
 #include "RemoteServer.h"
 #include "InputExecutor.h"
+#include "../Shared/SocketIo.h"
 #include <stdio.h>
 
 // ===== KONSTRUKTOR =====
@@ -203,16 +204,12 @@ void RemoteServer::HandleClient(ClientConnection* client) {
 
 // ===== ODBIERANIE KOMENDY =====
 bool RemoteServer::ReceiveCommand(SOCKET socket, FrameCmd& cmd) {
-    int received = recv(socket, (char*)&cmd, sizeof(FrameCmd), 0);
-    
-    if (received != sizeof(FrameCmd)) {
+    if (!SocketIo::RecvAll(socket, (char*)&cmd, sizeof(FrameCmd))) {
         return false;
     }
-    
     if (cmd.magic[0] != 'C' || cmd.magic[1] != 'M' || cmd.magic[2] != 'D') {
         return false;
     }
-    
     return true;
 }
 
@@ -271,29 +268,12 @@ bool RemoteServer::SendFrame(SOCKET socket, FrameBmp& frame) {
 
 // ===== WYSYŁANIE NAGŁÓWKA =====
 bool RemoteServer::SendHeader(SOCKET socket, HeaderBmp& header) {
-    int sent = send(socket, (char*)&header, sizeof(HeaderBmp), 0);
-    return (sent == sizeof(HeaderBmp));
+    return SocketIo::SendAll(socket, (char*)&header, sizeof(HeaderBmp));
 }
 
 // ===== WYSYŁANIE DANYCH =====
 bool RemoteServer::SendData(SOCKET socket, const char* data, int size) {
-    if (!  data || size <= 0) {
-        return true;
-    }
-    
-    int totalSent = 0;
-    
-    while (totalSent < size) {
-        int sent = send(socket, data + totalSent, size - totalSent, 0);
-        
-        if (sent <= 0) {
-            return false;
-        }
-        
-        totalSent += sent;
-    }
-    
-    return true;
+    return SocketIo::SendAll(socket, data, size);
 }
 
 // ===== ROZŁĄCZANIE KLIENTA =====
@@ -386,14 +366,12 @@ void RemoteServer::SetFrameGenerator(FrameGeneratorCallback callback, void* user
 
 // ===== ODBIERANIE DANYCH MYSZY =====
 bool RemoteServer::ReceiveMouseData(SOCKET socket, DataMouse& data) {
-    int received = recv(socket, (char*)&data, sizeof(DataMouse), 0);
-    return (received == sizeof(DataMouse));
+    return SocketIo::RecvAll(socket, (char*)&data, sizeof(DataMouse));
 }
 
 // ===== ODBIERANIE DANYCH KLAWIATURY =====
 bool RemoteServer::ReceiveKeyData(SOCKET socket, DataKey& data) {
-    int received = recv(socket, (char*)&data, sizeof(DataKey), 0);
-    return (received == sizeof(DataKey));
+    return SocketIo::RecvAll(socket, (char*)&data, sizeof(DataKey));
 }
 
 // ===== OBSŁUGA KOMEND MYSZY =====

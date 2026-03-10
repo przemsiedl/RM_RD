@@ -17,6 +17,8 @@ private:
     ImageData* pFrameBuffer;
     
     HBITMAP hBitmap;
+    void* pDibBits;
+    long storedDataSize;
 
     bool Connect();
     void Disconnect();
@@ -27,7 +29,7 @@ private:
     bool HandleNoChangeFrame(const HeaderBmp& header, HBITMAP& result);
     bool ReceiveImageData(ImageData* img, const HeaderBmp& header);
     
-    HBITMAP CreateBitmapFromImageData(const ImageData* img);
+    bool CreateOrUpdateBitmap(const ImageData* img);
     
     // Inicjalizacja/realokacja bufora
     bool EnsureFrameBuffer(int width, int height, int bpp, int stride);

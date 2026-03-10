@@ -1,4 +1,8 @@
+<<<<<<< Updated upstream
 #include "SocketIo.h"
+=======
+#include "..\Shared\SocketIo.h"
+>>>>>>> Stashed changes
 
 bool SocketIo::SendAll(SOCKET s, const char* data, int size) {
     if (!data || size <= 0) {

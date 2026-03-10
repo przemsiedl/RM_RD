@@ -10,6 +10,8 @@ RemoteClient::RemoteClient(const char* _host, int _port) {
     
     pFrameBuffer = NULL;
     hBitmap = NULL;
+    pDibBits = NULL;
+    storedDataSize = 0;
 
     host = new char[strlen(_host) + 1];
     strcpy(host, _host);
@@ -33,6 +35,8 @@ RemoteClient::~RemoteClient() {
     }
     
     if (hBitmap) {
+        pDibBits = NULL;
+        storedDataSize = 0;
         DeleteObject(hBitmap);
         hBitmap = NULL;
     }
@@ -329,37 +333,53 @@ bool RemoteClient::FetchBitmap(HBITMAP& result) {
     remoteScreenWidth = pFrameBuffer->width;
     remoteScreenHeight = pFrameBuffer->height;
     
-    // Utwórz bitmapę z bufora
+    if (!CreateOrUpdateBitmap(pFrameBuffer)) {
+        return false;
+    }
+    result = hBitmap;
+    return true;
+}
+
+// ===== TWORZENIE LUB AKTUALIZACJA BITMAPY (REUSE) =====
+bool RemoteClient::CreateOrUpdateBitmap(const ImageData* img) {
+    if (!img || !img->pData || img->width <= 0 || img->height <= 0) {
+        return false;
+    }
+    
+    DWORD dataSize = (DWORD)img->dataSize;
+    
+    if (hBitmap && pDibBits && img->dataSize == storedDataSize) {
+        memcpy(pDibBits, img->pData, dataSize);
+        return true;
+    }
+    
     if (hBitmap) {
         DeleteObject(hBitmap);
         hBitmap = NULL;
-    }
-    
-    hBitmap = CreateBitmapFromImageData(pFrameBuffer);
-    result = hBitmap;
-    
-    return (hBitmap != NULL);
-}
-
-// ===== TWORZENIE BITMAPY Z ImageData =====
-HBITMAP RemoteClient::CreateBitmapFromImageData(const ImageData* img) {
-    if (!img || !img->pData || img->width <= 0 || img->height <= 0) {
-        return NULL;
+        pDibBits = NULL;
+        storedDataSize = 0;
     }
     
     BITMAPINFO bmi;
     memset(&bmi, 0, sizeof(bmi));
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = img->width;
-    bmi.bmiHeader.biHeight = -img->height;  // Top-down
+    bmi.bmiHeader.biHeight = -img->height;
     bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = img->bitsPerPixel;
+    bmi.bmiHeader.biBitCount = (WORD)img->bitsPerPixel;
     bmi.bmiHeader.biCompression = BI_RGB;
     
     HDC hdc = GetDC(NULL);
-    HBITMAP hBmp = CreateDIBitmap(hdc, &bmi.bmiHeader, CBM_INIT,
-                                   img->pData, &bmi, DIB_RGB_COLORS);
+    void* pBits = NULL;
+    hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
     ReleaseDC(NULL, hdc);
-
-    return hBmp;
+    
+    if (!hBitmap || !pBits) {
+        return false;
+    }
+    
+    pDibBits = pBits;
+    storedDataSize = img->dataSize;
+    memcpy(pDibBits, img->pData, dataSize);
+    return true;
 }

@@ -1,18 +1,24 @@
- #include "FrameProvider.h"
- #include "../Shared/Compression.h"
- 
- FrameProvider::FrameProvider(int bpp) {
-     frameCallback = NULL;
-     callbackUserData = NULL;
-     pBmpStream = new BmpStream(bpp);
- }
- 
- FrameProvider::~FrameProvider() {
-     if (pBmpStream) {
-         delete pBmpStream;
-         pBmpStream = NULL;
-     }
- }
+#include "FrameProvider.h"
+#include "../Shared/Compression.h"
+
+FrameProvider::FrameProvider(int bpp) {
+    frameCallback = NULL;
+    callbackUserData = NULL;
+    pBmpStream = new BmpStream(bpp);
+    hasCachedFrame = false;
+    captureThread = NULL;
+    captureRunning = false;
+    InitializeCriticalSection(&frameSection);
+}
+
+FrameProvider::~FrameProvider() {
+    StopCaptureThread();
+    DeleteCriticalSection(&frameSection);
+    if (pBmpStream) {
+        delete pBmpStream;
+        pBmpStream = NULL;
+    }
+}
  
  void FrameProvider::Reset() {
      if (pBmpStream) {
@@ -25,13 +31,73 @@
      callbackUserData = userData;
  }
  
- bool FrameProvider::GetFrame(FrameBmp& frame) {
-     if (frameCallback) {
-         return frameCallback(frame, callbackUserData);
-     }
- 
-     return CaptureScreen(frame);
- }
+bool FrameProvider::GetFrame(FrameBmp& frame) {
+    if (frameCallback) {
+        return frameCallback(frame, callbackUserData);
+    }
+
+    EnterCriticalSection(&frameSection);
+    if (!hasCachedFrame) {
+        LeaveCriticalSection(&frameSection);
+        return false;
+    }
+    frame.header = cachedFrame.header;
+    if (cachedFrame.header.length > 0 && cachedFrame.data.data) {
+        frame.data.CopyData(cachedFrame.data.data, cachedFrame.header.length);
+    } else {
+        frame.data.Reset();
+    }
+    LeaveCriticalSection(&frameSection);
+    return true;
+}
+
+void FrameProvider::CaptureAndStore() {
+    FrameBmp frame;
+    if (!CaptureScreen(frame)) {
+        return;
+    }
+    EnterCriticalSection(&frameSection);
+    cachedFrame.data.Reset();
+    cachedFrame.header = frame.header;
+    if (frame.header.length > 0 && frame.data.data) {
+        cachedFrame.data.CopyData(frame.data.data, frame.header.length);
+    }
+    hasCachedFrame = true;
+    LeaveCriticalSection(&frameSection);
+}
+
+DWORD WINAPI FrameProvider::CaptureThreadProc(LPVOID param) {
+    FrameProvider* self = (FrameProvider*)param;
+    self->CaptureAndStore();
+    while (self->captureRunning) {
+        self->CaptureAndStore();
+        for (int i = 0; i < 5 && self->captureRunning; i++) {
+            Sleep(10);
+        }
+    }
+    return 0;
+}
+
+void FrameProvider::StartCaptureThread() {
+    if (captureThread) {
+        return;
+    }
+    captureRunning = true;
+    DWORD threadId = 0;
+    captureThread = CreateThread(NULL, 0, CaptureThreadProc, this, 0, &threadId);
+    if (!captureThread) {
+        captureRunning = false;
+    }
+}
+
+void FrameProvider::StopCaptureThread() {
+    captureRunning = false;
+    if (captureThread) {
+        WaitForSingleObject(captureThread, 5000);
+        CloseHandle(captureThread);
+        captureThread = NULL;
+    }
+}
  
  bool FrameProvider::CaptureScreen(FrameBmp& frame) {
      if (!pBmpStream) {

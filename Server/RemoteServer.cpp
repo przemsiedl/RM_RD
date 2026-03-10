@@ -86,13 +86,17 @@ bool RemoteServer::Start() {
     
     running = true;
     listenThread = CreateThread(NULL, 0, ListenThreadProc, this, 0, &listenThreadId);
-    
+
     if (!listenThread) {
         running = false;
         CleanupSocket();
         return false;
     }
-    
+
+    if (frameProvider) {
+        frameProvider->StartCaptureThread();
+    }
+
     return true;
 }
 
@@ -105,7 +109,11 @@ void RemoteServer::Stop() {
     running = false;
     CleanupSocket();
     DisconnectAllClients();
-    
+
+    if (frameProvider) {
+        frameProvider->StopCaptureThread();
+    }
+
     if (listenThread) {
         WaitForSingleObject(listenThread, 5000);
         CloseHandle(listenThread);
@@ -169,11 +177,7 @@ bool RemoteServer::AcceptClient(ClientConnection* client) {
 DWORD WINAPI RemoteServer::ClientThreadProc(LPVOID param) {
     ClientConnection* client = (ClientConnection*)param;
     RemoteServer* server = (RemoteServer*)client->userData;
-    
-    if (server->frameProvider) {
-        server->frameProvider->Reset();
-    }
-    
+
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (&server->clients[i] == client) {
             client->userData = server;

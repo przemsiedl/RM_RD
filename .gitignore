@@ -1,14 +1,52 @@
-*.bak
+# Cursor
+.cursor/
+
+# Build artifacts
 *.exe
-*.csm
 *.obj
-*.ild
-*.mrt
-*.DSW
-*.~de
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.pch
+
+# Borland / C++ Builder
+*.tds
 *.ilc
 *.ilf
-*.tds
+*.ild
 *.ils
+*.csm
+*.mrt
 *.mbt
 *.obr
+*.~de
+*.bak
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.sln.docstates
+x64/
+x86/
+Debug/
+Release/
+*.aps
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# IDE / editors
+*.swp
+*.swo
+*~
+.DS_Store

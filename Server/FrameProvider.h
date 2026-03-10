@@ -14,24 +14,20 @@ private:
     void* callbackUserData;
 
     CRITICAL_SECTION frameSection;
-    FrameBmp cachedFrame;
-    bool hasCachedFrame;
-
+    ImageData* pCurrentFrame;
     HANDLE captureThread;
-    volatile bool captureRunning;
+    volatile long captureRunning;
 
-    bool CaptureScreen(FrameBmp& frame);
-    void ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame);
-    void CaptureAndStore();
+    void CaptureLoop();
     static DWORD WINAPI CaptureThreadProc(LPVOID param);
+    bool ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame);
 
 public:
     explicit FrameProvider(int bpp = 24);
     ~FrameProvider();
 
-    void Reset();
     void SetFrameGenerator(FrameGeneratorCallback callback, void* userData = NULL);
-    bool GetFrame(FrameBmp& frame);
+    bool GetFrame(FrameBmp& frame, ImageData* lastSentFrame);
 
     void StartCaptureThread();
     void StopCaptureThread();

@@ -26,7 +26,6 @@ RemoteServer::  RemoteServer(int _port) {
 RemoteServer:: ~RemoteServer() {
     Stop();
     
-    // Zwolnij BmpStream
     if (frameProvider) {
         delete frameProvider;
         frameProvider = NULL;
@@ -152,24 +151,31 @@ void RemoteServer::ListenLoop() {
 // ===== AKCEPTOWANIE KLIENTA =====
 bool RemoteServer::AcceptClient(ClientConnection* client) {
     int addrLen = sizeof(client->address);
-    
+
     client->socket = accept(listenSocket, (PSOCKADDR)&client->address, &addrLen);
-    
+
     if (client->socket == INVALID_SOCKET) {
         return false;
     }
-    
+
+    client->pLastSentFrame = new ImageData();
+    if (!client->pLastSentFrame) {
+        closesocket(client->socket);
+        client->socket = INVALID_SOCKET;
+        return false;
+    }
+
     int timeout = 30000;
     setsockopt(client->socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
     setsockopt(client->socket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
-    
+
     int flag = 1;
     setsockopt(client->socket, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag));
-    
+
     EnterCriticalSection(&clientsSection);
     client->active = true;
     LeaveCriticalSection(&clientsSection);
-    
+
     return true;
 }
 
@@ -198,7 +204,7 @@ void RemoteServer::HandleClient(ClientConnection* client) {
             break;
         }
         
-        if (! ProcessCommand(client->socket, cmd)) {
+        if (! ProcessCommand(client, cmd)) {
             break;
         }
     }
@@ -218,10 +224,10 @@ bool RemoteServer::ReceiveCommand(SOCKET socket, FrameCmd& cmd) {
 }
 
 // ===== PRZETWARZANIE KOMENDY =====
-bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
+bool RemoteServer::ProcessCommand(ClientConnection* client, FrameCmd& cmd) {
     switch (cmd.cmd) {
         case CMD_GET_FRAME:
-            return HandleGetFrame(socket);
+            return HandleGetFrame(client);
         
         case CMD_MOUSE_MOVE:
         case CMD_MOUSE_LEFT_DOWN:
@@ -231,11 +237,11 @@ bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
         case CMD_MOUSE_MIDDLE_DOWN:
         case CMD_MOUSE_MIDDLE_UP:  
         case CMD_MOUSE_WHEEL:  
-            return ProcessMouseCommand(socket, cmd);
+            return ProcessMouseCommand(client, cmd);
         
         case CMD_KEY_DOWN:
         case CMD_KEY_UP:
-            return ProcessKeyCommand(socket, cmd);
+            return ProcessKeyCommand(client, cmd);
         
         default:  
             return false;
@@ -243,16 +249,25 @@ bool RemoteServer::ProcessCommand(SOCKET socket, FrameCmd& cmd) {
 }
 
 // ===== OBSŁUGA KOMENDY GET_FRAME =====
-bool RemoteServer::HandleGetFrame(SOCKET socket) {
-    FrameBmp frame;
-    
-    if (!frameProvider || !frameProvider->GetFrame(frame)) {
+bool RemoteServer::HandleGetFrame(ClientConnection* client) {
+    if (!client || !client->pLastSentFrame || !frameProvider) {
         return false;
     }
-    
-    bool result = SendFrame(socket, frame);
-    
-    return result;
+    DWORD now = GetTickCount();
+    DWORD elapsed = (client->lastFrameSendTime != 0) ?
+        (now - client->lastFrameSendTime) : MIN_FRAME_INTERVAL_MS;
+    if (elapsed < MIN_FRAME_INTERVAL_MS && client->lastFrameSendTime != 0) {
+        Sleep(MIN_FRAME_INTERVAL_MS - elapsed);
+    }
+    FrameBmp frame;
+    if (!frameProvider->GetFrame(frame, client->pLastSentFrame)) {
+        return false;
+    }
+    if (!SendFrame(client->socket, frame)) {
+        return false;
+    }
+    client->lastFrameSendTime = GetTickCount();
+    return true;
 }
 
 // ===== WYSYŁANIE RAMKI =====
@@ -283,21 +298,26 @@ bool RemoteServer::SendData(SOCKET socket, const char* data, int size) {
 // ===== ROZŁĄCZANIE KLIENTA =====
 void RemoteServer::DisconnectClient(ClientConnection* client) {
     EnterCriticalSection(&clientsSection);
-    
+
     if (client->active) {
         client->active = false;
-        
+
+        if (client->pLastSentFrame) {
+            delete client->pLastSentFrame;
+            client->pLastSentFrame = NULL;
+        }
+
         if (client->socket != INVALID_SOCKET) {
             closesocket(client->socket);
             client->socket = INVALID_SOCKET;
         }
-        
+
         if (client->thread) {
             CloseHandle(client->thread);
             client->thread = NULL;
         }
     }
-    
+
     LeaveCriticalSection(&clientsSection);
 }
 
@@ -379,23 +399,19 @@ bool RemoteServer::ReceiveKeyData(SOCKET socket, DataKey& data) {
 }
 
 // ===== OBSŁUGA KOMEND MYSZY =====
-bool RemoteServer::ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd) {
+bool RemoteServer::ProcessMouseCommand(ClientConnection* client, const FrameCmd& cmd) {
     DataMouse data;
-    
-    if (!ReceiveMouseData(socket, data)) {
+    if (!ReceiveMouseData(client->socket, data)) {
         return false;
     }
-    
     return InputExecutor::ExecuteMouseCommand(cmd, data);
 }
 
 // ===== OBSŁUGA KOMEND KLAWIATURY =====
-bool RemoteServer::ProcessKeyCommand(SOCKET socket, const FrameCmd& cmd) {
+bool RemoteServer::ProcessKeyCommand(ClientConnection* client, const FrameCmd& cmd) {
     DataKey data;
-    
-    if (! ReceiveKeyData(socket, data)) {
+    if (!ReceiveKeyData(client->socket, data)) {
         return false;
     }
-    
     return InputExecutor::ExecuteKeyCommand(cmd, data);
 }

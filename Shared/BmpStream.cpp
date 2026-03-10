@@ -218,3 +218,70 @@ bool BmpStream::ApplyDiffXOR(char* target, const ImageData* diff)
 
     return true;
 }
+
+bool BmpStream::ComputeDiff(const ImageData* current, const ImageData* previous,
+                             ImageData* outDiff) {
+    if (!current || !current->pData || !outDiff) return false;
+
+    outDiff->width = current->width;
+    outDiff->height = current->height;
+    outDiff->bitsPerPixel = current->bitsPerPixel;
+    outDiff->stride = current->stride;
+    outDiff->dataSize = current->dataSize;
+
+    if (outDiff->pData) delete[] outDiff->pData;
+    outDiff->pData = new char[current->dataSize];
+    if (!outDiff->pData) return false;
+
+    bool isFullFrame = (!previous || !previous->pData ||
+                        previous->width != current->width ||
+                        previous->height != current->height ||
+                        previous->bitsPerPixel != current->bitsPerPixel);
+
+    outDiff->isFullFrame = isFullFrame;
+
+    if (isFullFrame) {
+        CopyMemory(outDiff->pData, current->pData, current->dataSize);
+        outDiff->isEmptyDiff = false;
+        return true;
+    }
+
+    int bytesPerPixel = current->bitsPerPixel / 8;
+    bool anyDiff = false;
+
+    for (int y = 0; y < current->height; y++) {
+        char* pCurrRow = current->pData + (y * current->stride);
+        char* pPrevRow = previous->pData + (y * previous->stride);
+        char* pDiffRow = outDiff->pData + (y * outDiff->stride);
+
+        for (int x = 0; x < current->width; x++) {
+            int offset = x * bytesPerPixel;
+            for (int i = 0; i < bytesPerPixel; i++) {
+                char value = pCurrRow[offset + i] ^ pPrevRow[offset + i];
+                pDiffRow[offset + i] = value;
+                if (value != 0) anyDiff = true;
+            }
+        }
+    }
+
+    outDiff->isEmptyDiff = !anyDiff;
+    return true;
+}
+
+bool BmpStream::CopyCurrentTo(ImageData* out) const {
+    if (!pCurrent || !pCurrent->pData || !out) return false;
+    if (out->width != pCurrent->width || out->height != pCurrent->height ||
+        out->stride != pCurrent->stride || out->dataSize != pCurrent->dataSize ||
+        !out->pData) {
+        if (out->pData) delete[] out->pData;
+        out->width = pCurrent->width;
+        out->height = pCurrent->height;
+        out->bitsPerPixel = pCurrent->bitsPerPixel;
+        out->stride = pCurrent->stride;
+        out->dataSize = pCurrent->dataSize;
+        out->pData = new char[pCurrent->dataSize];
+        if (!out->pData) return false;
+    }
+    CopyMemory(out->pData, pCurrent->pData, pCurrent->dataSize);
+    return true;
+}

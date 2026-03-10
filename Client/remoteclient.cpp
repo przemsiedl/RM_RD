@@ -10,8 +10,8 @@ RemoteClient::RemoteClient(const char* _host, int _port) {
     
     pFrameBuffer = NULL;
     hBitmap = NULL;
-    pDibBits = NULL;
-    storedDataSize = 0;
+    bitmapWidth = 0;
+    bitmapHeight = 0;
 
     host = new char[strlen(_host) + 1];
     strcpy(host, _host);
@@ -35,10 +35,10 @@ RemoteClient::~RemoteClient() {
     }
     
     if (hBitmap) {
-        pDibBits = NULL;
-        storedDataSize = 0;
         DeleteObject(hBitmap);
         hBitmap = NULL;
+        bitmapWidth = 0;
+        bitmapHeight = 0;
     }
 
     if (host) {
@@ -329,10 +329,9 @@ bool RemoteClient::FetchBitmap(HBITMAP& result) {
         return false;
     }
     
-    // Zapamietaj rozmiar zdalnego ekranu
     remoteScreenWidth = pFrameBuffer->width;
     remoteScreenHeight = pFrameBuffer->height;
-    
+
     if (!CreateOrUpdateBitmap(pFrameBuffer)) {
         return false;
     }
@@ -340,46 +339,41 @@ bool RemoteClient::FetchBitmap(HBITMAP& result) {
     return true;
 }
 
-// ===== TWORZENIE LUB AKTUALIZACJA BITMAPY (REUSE) =====
+// ===== TWORZENIE LUB AKTUALIZACJA BITMAPY (REUSE via SetDIBits) =====
 bool RemoteClient::CreateOrUpdateBitmap(const ImageData* img) {
     if (!img || !img->pData || img->width <= 0 || img->height <= 0) {
         return false;
     }
-    
-    DWORD dataSize = (DWORD)img->dataSize;
-    
-    if (hBitmap && pDibBits && img->dataSize == storedDataSize) {
-        memcpy(pDibBits, img->pData, dataSize);
-        return true;
-    }
-    
-    if (hBitmap) {
-        DeleteObject(hBitmap);
-        hBitmap = NULL;
-        pDibBits = NULL;
-        storedDataSize = 0;
-    }
-    
+
     BITMAPINFO bmi;
     memset(&bmi, 0, sizeof(bmi));
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = img->width;
     bmi.bmiHeader.biHeight = -img->height;
     bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = (WORD)img->bitsPerPixel;
+    bmi.bmiHeader.biBitCount = img->bitsPerPixel;
     bmi.bmiHeader.biCompression = BI_RGB;
-    
+
     HDC hdc = GetDC(NULL);
-    void* pBits = NULL;
-    hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
-    ReleaseDC(NULL, hdc);
-    
-    if (!hBitmap || !pBits) {
-        return false;
+    if (!hdc) return false;
+
+    if (hBitmap && bitmapWidth == img->width && bitmapHeight == img->height) {
+        int lines = SetDIBits(hdc, hBitmap, 0, img->height, img->pData, &bmi, DIB_RGB_COLORS);
+        ReleaseDC(NULL, hdc);
+        return (lines == img->height);
     }
-    
-    pDibBits = pBits;
-    storedDataSize = img->dataSize;
-    memcpy(pDibBits, img->pData, dataSize);
+
+    if (hBitmap) {
+        DeleteObject(hBitmap);
+        hBitmap = NULL;
+    }
+
+    hBitmap = CreateDIBitmap(hdc, &bmi.bmiHeader, CBM_INIT, img->pData, &bmi, DIB_RGB_COLORS);
+    ReleaseDC(NULL, hdc);
+
+    if (!hBitmap) return false;
+
+    bitmapWidth = img->width;
+    bitmapHeight = img->height;
     return true;
 }

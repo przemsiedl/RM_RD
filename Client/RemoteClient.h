@@ -17,8 +17,7 @@ private:
     ImageData* pFrameBuffer;
     
     HBITMAP hBitmap;
-    void* pDibBits;
-    long storedDataSize;
+    int bitmapWidth, bitmapHeight;
 
     bool Connect();
     void Disconnect();

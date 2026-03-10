@@ -62,13 +62,17 @@ public:
     // Zwraca obliczoną różnicę (NIE zwalniać - zarządzane przez klasę)
     // Wymaga wcześniejszego wywołania CalcDiff()
     const ImageData* GetDiff() const { return pDiff; }
+
+    bool CopyCurrentTo(ImageData* out) const;
     
     // ===== SKŁADANIE OBRAZÓW (REKONSTRUKCJA Z RÓŻNIC) =====
     
     // Aplikuje różnicę XOR na istniejący bufor
-    // target - bufor docelowy (zostanie zmodyfikowany)
-    // diff - różnica do aplikacji
     static bool ApplyDiffXOR(char* target, const ImageData* diff);
+
+    // Oblicza diff = current XOR previous (do użycia bez BmpStream)
+    static bool ComputeDiff(const ImageData* current, const ImageData* previous,
+                            ImageData* outDiff);
 };
 
 #endif

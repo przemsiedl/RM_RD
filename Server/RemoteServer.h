@@ -4,11 +4,13 @@
 #include <windows.h>
 #include <winsock.h>
 #include "../Shared/Frame.h"
+#include "../Shared/BmpStream.h"
 #include "FrameProvider.h"
 
 #define MAX_CLIENTS 10
 
-// Struktura klienta
+#define MIN_FRAME_INTERVAL_MS 45
+
 struct ClientConnection {
     SOCKET socket;
     SOCKADDR_IN address;
@@ -16,13 +18,17 @@ struct ClientConnection {
     DWORD threadId;
     bool active;
     void* userData;
-    
+    ImageData* pLastSentFrame;
+    DWORD lastFrameSendTime;
+
     ClientConnection() {
         socket = INVALID_SOCKET;
         thread = NULL;
         threadId = 0;
         active = false;
         userData = NULL;
+        pLastSentFrame = NULL;
+        lastFrameSendTime = 0;
         memset(&address, 0, sizeof(address));
     }
 };
@@ -70,10 +76,10 @@ private:
     bool SendData(SOCKET socket, const char* data, int size);
     
     // Obsluga komend
-    bool ProcessCommand(SOCKET socket, FrameCmd& cmd);
-    bool HandleGetFrame(SOCKET socket);
-    bool ProcessMouseCommand(SOCKET socket, const FrameCmd& cmd);
-    bool ProcessKeyCommand(SOCKET socket, const FrameCmd& cmd);
+    bool ProcessCommand(ClientConnection* client, FrameCmd& cmd);
+    bool HandleGetFrame(ClientConnection* client);
+    bool ProcessMouseCommand(ClientConnection* client, const FrameCmd& cmd);
+    bool ProcessKeyCommand(ClientConnection* client, const FrameCmd& cmd);
     
 public:
     RemoteServer(int _port = 8080);

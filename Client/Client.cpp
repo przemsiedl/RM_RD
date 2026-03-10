@@ -258,8 +258,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst,
         return -1;
     }
     
-    // Timer:  50ms = 20 FPS
-    SetTimer(hwnd, 1000, 50, NULL);
+    // Timer: 55ms ~18 FPS - margines na round-trip, unikamy desync
+    SetTimer(hwnd, 1000, 55, NULL);
     
     MSG msg = {0};
     while (GetMessage(&msg, NULL, 0, 0)) {

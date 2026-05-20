@@ -3,8 +3,13 @@
 
 class Compression {
 public:
-    static void encrypt(char* dataIn, int inLength, char* dataOut, int& outLength);
-    static void decrypt(char* dataIn, int inLength, char* dataOut, int& outLength);
+    /* outBufferBytes = rozmiar przydzielonego dataOut; dla pelnej sciezki LZ >= inLength*2+4096. */
+    static void encrypt(const char* dataIn, int inLength, char* dataOut, int& outLength, int outBufferBytes);
+    static void decrypt(const char* dataIn, int inLength, char* dataOut, int& outLength);
+
+    // Region (x,y,width,height); dataOutCapacity jak przy encrypt (plain region *2 + 4096).
+    static void encryptRegion(const char* src, int srcStride, int x, int y,
+        int width, int height, int bytesPerPixel, char* dataOut, int& outLength, int dataOutCapacity);
 };
 
 #endif // COMPRESSION_H

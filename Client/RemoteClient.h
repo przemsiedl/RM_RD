@@ -33,6 +33,10 @@ private:
     // Inicjalizacja/realokacja bufora
     bool EnsureFrameBuffer(int width, int height, int bpp, int stride);
 
+    int diffBlockW;
+    int diffBlockH;
+    bool diffGridDirty;
+
 public:
     RemoteClient(const char* _host, int port = 8080);
     ~RemoteClient();
@@ -44,6 +48,10 @@ public:
 
     bool IsConnected() const;
     bool FetchBitmap(HBITMAP& result);
+
+    // Siatka bloczkow XOR wysylana do serwera (CMD_SET_DIFF_GRID) przed kolejnymi GET_FRAME.
+    // Wymiary 8..128 pikseli (serwer obcina). Domyslnie 32x32.
+    void SetDiffGrid(int blockW, int blockH);
 };
 
 #endif

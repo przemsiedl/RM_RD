@@ -1,5 +1,7 @@
 #include "../Shared/Compression.h"
-#include <cstring>
+#include <limits.h>
+#include <string.h>
+#include <stdlib.h>
 
 const char ESC = (char)0xF0;
 const char CMD_COPY = 0x01;
@@ -8,12 +10,7 @@ const int MIN_MATCH = 4;
 const int MAX_OFFSET = 0x0FFF; // 4095
 const int MAX_LENGTH = 0x0FFF; // 4095
 
-// Tablica haszująca: 2^16 wpisów (64KB pamięci)
-// Przechowuje indeksy ostatnio widzianych sekwencji 4-bajtowych
-static int hashTable[65536];
-
 inline unsigned int getHash(const char* p) {
-    // Szybki hash dla 4 bajtów
     unsigned int v = *reinterpret_cast<const unsigned int*>(p);
     return ((v >> 16) ^ v) & 0xFFFF;
 }
@@ -29,31 +26,64 @@ inline void decodeOffsetLength(const char*& in, short& offset, short& length) {
     unsigned char b0 = (unsigned char)in[0];
     unsigned char b1 = (unsigned char)in[1];
     unsigned char b2 = (unsigned char)in[2];
-
     offset = (b0 << 4) | (b1 >> 4);
     length = ((b1 & 0x0F) << 8) | b2;
     in += 3;
 }
 
-void Compression::encrypt(char* dataIn, int inLength, char* dataOut, int& outLength) {
+/* Tylko literaly (ESC podwojony) — bez tablicy hasz; max wyjscie ~2 * inLength. */
+static void EncryptLiteralsOnly(const char* dataIn, int inLength, char* dataOut, int& outLength) {
+    char* out = dataOut;
+    for (int j = 0; j < inLength; j++) {
+        unsigned char b = (unsigned char)dataIn[j];
+        if (b == (unsigned char)ESC) {
+            *out++ = ESC;
+            *out++ = ESC;
+        } else
+            *out++ = (char)b;
+    }
+    outLength = (int)(out - dataOut);
+}
+
+void Compression::encrypt(const char* dataIn, int inLength, char* dataOut, int& outLength,
+    int outBufferBytes) {
+    outLength = 0;
+    if (!dataIn || !dataOut || inLength < 0 || outBufferBytes < 1)
+        return;
+
     if (inLength < MIN_MATCH) {
-        // Zbyt małe dane na kompresję - po prostu kopiuj z obsługą ESC
-        char* out = dataOut;
-        for(int i=0; i<inLength; ++i) {
-            if (dataIn[i] == ESC) { *out++ = ESC; *out++ = ESC; }
-            else *out++ = dataIn[i];
-        }
-        outLength = (int)(out - dataOut);
+        EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
+        if (outLength > outBufferBytes)
+            outLength = 0;
         return;
     }
 
-    // Inicjalizacja tablicy haszującej wartością -1
-    memset(hashTable, -1, sizeof(hashTable));
+    /* Pelna sciezka LZ wymaga bufora ~2x + zapas (literal 0xF0 -> 2 bajty). */
+    if (inLength > (INT_MAX - 4096) / 2) {
+        EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
+        if (outLength > outBufferBytes)
+            outLength = 0;
+        return;
+    }
+    int minForLz = inLength * 2 + 4096;
+    if (outBufferBytes < minForLz) {
+        EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
+        if (outLength > outBufferBytes)
+            outLength = 0;
+        return;
+    }
 
+    int* hashTable = (int*)malloc(65536u * sizeof(int));
+    if (!hashTable) {
+        EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
+        if (outLength > outBufferBytes)
+            outLength = 0;
+        return;
+    }
+    memset(hashTable, 0xFF, 65536u * sizeof(int));
     char* out = dataOut;
     int i = 0;
 
-    // Kompresujemy do momentu, gdy zostanie nam miejsce na MIN_MATCH
     while (i < inLength - MIN_MATCH) {
         unsigned int h = getHash(&dataIn[i]);
         int matchPos = hashTable[h];
@@ -62,16 +92,11 @@ void Compression::encrypt(char* dataIn, int inLength, char* dataOut, int& outLen
         short bestOffset = 0;
         short bestLength = 0;
 
-        // Jeśli znaleziono potencjalne dopasowanie w zasięgu okna
         if (matchPos != -1 && (i - matchPos) <= MAX_OFFSET) {
             int len = 0;
-            // Sprawdzanie długości dopasowania
-            while (i + len < inLength && 
-                   dataIn[matchPos + len] == dataIn[i + len] && 
-                   len < MAX_LENGTH) {
+            while (i + len < inLength && dataIn[matchPos + len] == dataIn[i + len] && len < MAX_LENGTH) {
                 len++;
             }
-
             if (len >= MIN_MATCH) {
                 bestLength = (short)len;
                 bestOffset = (short)(i - matchPos);
@@ -82,10 +107,7 @@ void Compression::encrypt(char* dataIn, int inLength, char* dataOut, int& outLen
             *out++ = ESC;
             *out++ = CMD_COPY;
             encodeOffsetLength(bestOffset, bestLength, out);
-            
-            // Zaktualizuj hashe dla pominiętych bajtów (opcjonalne, ale zwiększa stopień kompresji)
-            // Dla maksymalnej prędkości przy dużej ilości zer można to ograniczyć
-            for (int k = 1; k < bestLength; ++k) {
+            for (int k = 1; k < bestLength; k++) {
                 if (i + k < inLength - MIN_MATCH)
                     hashTable[getHash(&dataIn[i + k])] = i + k;
             }
@@ -95,27 +117,60 @@ void Compression::encrypt(char* dataIn, int inLength, char* dataOut, int& outLen
             if (b == (unsigned char)ESC) {
                 *out++ = ESC;
                 *out++ = ESC;
-            } else {
-                *out++ = b;
-            }
+            } else
+                *out++ = (char)b;
         }
     }
 
-    // Dokończenie pozostałych bajtów
     while (i < inLength) {
         unsigned char b = (unsigned char)dataIn[i++];
         if (b == (unsigned char)ESC) {
             *out++ = ESC;
             *out++ = ESC;
-        } else {
-            *out++ = b;
+        } else
+            *out++ = (char)b;
+    }
+
+    free(hashTable);
+    outLength = (int)(out - dataOut);
+    if (outLength > outBufferBytes) {
+        EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
+        if (outLength > outBufferBytes)
+            outLength = 0;
+    }
+}
+
+void Compression::encryptRegion(const char* src, int srcStride, int x, int y,
+    int width, int height, int bytesPerPixel, char* dataOut, int& outLength, int dataOutCapacity) {
+    outLength = 0;
+    int rowBytes = width * bytesPerPixel;
+    int regionStride = ((rowBytes + 3) / 4) * 4;
+    long regionSize = (long)regionStride * height;
+
+    if (regionSize <= 0 || regionSize > INT_MAX) {
+        return;
+    }
+    int plain = (int)regionSize;
+
+    char* temp = (char*)malloc((size_t)plain);
+    if (!temp) {
+        return;
+    }
+
+    for (int row = 0; row < height; row++) {
+        const char* srcRow = src + ((y + row) * srcStride) + (x * bytesPerPixel);
+        char* dstRow = temp + (row * regionStride);
+        memcpy(dstRow, srcRow, (size_t)rowBytes);
+        if (regionStride > rowBytes) {
+            memset(dstRow + rowBytes, 0, (size_t)(regionStride - rowBytes));
         }
     }
 
-    outLength = (int)(out - dataOut);
+    encrypt(temp, plain, dataOut, outLength, dataOutCapacity);
+    free(temp);
 }
 
-void Compression::decrypt(char* dataIn, int inLength, char* dataOut, int& outLength) {
+void Compression::decrypt(const char* dataIn, int inLength, char* dataOut, int& outLength) {
     const char* in = dataIn;
     const char* end = dataIn + inLength;
     char* out = dataOut;
@@ -127,25 +182,20 @@ void Compression::decrypt(char* dataIn, int inLength, char* dataOut, int& outLen
             *out++ = b;
             continue;
         }
+        if (in >= end)
+            break;
 
-        // Sprawdzamy czy to koniec danych (bezpieczeństwo)
-        if (in >= end) break; 
-        
         unsigned char cmd = (unsigned char)*in++;
-
         if (cmd == (unsigned char)ESC) {
             *out++ = ESC;
         } else if (cmd == (unsigned char)CMD_COPY) {
             short offset, length;
             decodeOffsetLength(in, offset, length);
-
             char* src = out - offset;
-            // Używamy prostej pętli, ponieważ zakresy mogą na siebie nachodzić (np. przy zerach)
-            for (short j = 0; j < length; ++j) {
+            for (short j = 0; j < length; j++) {
                 *out++ = src[j];
             }
         }
     }
-
     outLength = (int)(out - dataOut);
 }

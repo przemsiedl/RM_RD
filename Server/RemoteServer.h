@@ -20,6 +20,8 @@ struct ClientConnection {
     void* userData;
     ImageData* pLastSentFrame;
     DWORD lastFrameSendTime;
+    int diffBlockW;
+    int diffBlockH;
 
     ClientConnection() {
         socket = INVALID_SOCKET;
@@ -29,6 +31,8 @@ struct ClientConnection {
         userData = NULL;
         pLastSentFrame = NULL;
         lastFrameSendTime = 0;
+        diffBlockW = 32;
+        diffBlockH = 32;
         memset(&address, 0, sizeof(address));
     }
 };
@@ -71,6 +75,7 @@ private:
     bool ReceiveCommand(SOCKET socket, FrameCmd& cmd);
     bool ReceiveMouseData(SOCKET socket, DataMouse& data);
     bool ReceiveKeyData(SOCKET socket, DataKey& data);
+    bool ReceiveDataDiffGrid(SOCKET socket, DataDiffGrid& data);
     bool SendFrame(SOCKET socket, FrameBmp& frame);
     bool SendHeader(SOCKET socket, HeaderBmp& header);
     bool SendData(SOCKET socket, const char* data, int size);
@@ -78,6 +83,7 @@ private:
     // Obsluga komend
     bool ProcessCommand(ClientConnection* client, FrameCmd& cmd);
     bool HandleGetFrame(ClientConnection* client);
+    bool ProcessSetDiffGrid(ClientConnection* client, const FrameCmd& cmd);
     bool ProcessMouseCommand(ClientConnection* client, const FrameCmd& cmd);
     bool ProcessKeyCommand(ClientConnection* client, const FrameCmd& cmd);
     

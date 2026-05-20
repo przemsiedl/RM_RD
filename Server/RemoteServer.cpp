@@ -3,6 +3,12 @@
 #include "../Shared/SocketIo.h"
 #include <stdio.h>
 
+static int ClampDiffBlockDim(int v) {
+    if (v < 8) return 8;
+    if (v > 128) return 128;
+    return v;
+}
+
 // ===== KONSTRUKTOR =====
 RemoteServer::  RemoteServer(int _port) {
     port = _port;
@@ -158,6 +164,9 @@ bool RemoteServer::AcceptClient(ClientConnection* client) {
         return false;
     }
 
+    client->diffBlockW = 32;
+    client->diffBlockH = 32;
+
     client->pLastSentFrame = new ImageData();
     if (!client->pLastSentFrame) {
         closesocket(client->socket);
@@ -228,6 +237,9 @@ bool RemoteServer::ProcessCommand(ClientConnection* client, FrameCmd& cmd) {
     switch (cmd.cmd) {
         case CMD_GET_FRAME:
             return HandleGetFrame(client);
+
+        case CMD_SET_DIFF_GRID:
+            return ProcessSetDiffGrid(client, cmd);
         
         case CMD_MOUSE_MOVE:
         case CMD_MOUSE_LEFT_DOWN:
@@ -248,6 +260,18 @@ bool RemoteServer::ProcessCommand(ClientConnection* client, FrameCmd& cmd) {
     }
 }
 
+// ===== USTAWIENIE SIATKI DIFF (klient) =====
+bool RemoteServer::ProcessSetDiffGrid(ClientConnection* client, const FrameCmd& cmd) {
+    if (!client || cmd.length != (int)sizeof(DataDiffGrid))
+        return false;
+    DataDiffGrid dg;
+    if (!ReceiveDataDiffGrid(client->socket, dg))
+        return false;
+    client->diffBlockW = ClampDiffBlockDim(dg.blockW);
+    client->diffBlockH = ClampDiffBlockDim(dg.blockH);
+    return true;
+}
+
 // ===== OBSŁUGA KOMENDY GET_FRAME =====
 bool RemoteServer::HandleGetFrame(ClientConnection* client) {
     if (!client || !client->pLastSentFrame || !frameProvider) {
@@ -260,7 +284,8 @@ bool RemoteServer::HandleGetFrame(ClientConnection* client) {
         Sleep(MIN_FRAME_INTERVAL_MS - elapsed);
     }
     FrameBmp frame;
-    if (!frameProvider->GetFrame(frame, client->pLastSentFrame)) {
+    if (!frameProvider->GetFrame(frame, client->pLastSentFrame,
+            client->diffBlockW, client->diffBlockH)) {
         return false;
     }
     if (!SendFrame(client->socket, frame)) {
@@ -396,6 +421,10 @@ bool RemoteServer::ReceiveMouseData(SOCKET socket, DataMouse& data) {
 // ===== ODBIERANIE DANYCH KLAWIATURY =====
 bool RemoteServer::ReceiveKeyData(SOCKET socket, DataKey& data) {
     return SocketIo::RecvAll(socket, (char*)&data, sizeof(DataKey));
+}
+
+bool RemoteServer::ReceiveDataDiffGrid(SOCKET socket, DataDiffGrid& data) {
+    return SocketIo::RecvAll(socket, (char*)&data, sizeof(DataDiffGrid));
 }
 
 // ===== OBSŁUGA KOMEND MYSZY =====

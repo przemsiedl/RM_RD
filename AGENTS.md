@@ -4,6 +4,10 @@ Project: RM_RD
 Type: Windows remote desktop (client/server) in C++
 OS: Windows only (WinAPI, WinSock)
 
+### Session bootstrap (Cursor rules)
+
+At task start, read: `README.md`, `.cursor/steering/DECISIONS.md`, `.cursor/steering/INTERFACES.md`. If present, read `.cursor/steering/NEXT-STEPS.md` (and the repo-root `NEXT-STEPS.md` for the feature roadmap). After changing wire protocol or public `Shared/*.h` APIs, update `INTERFACES.md` and its Changelog in the same session.
+
 ### Quick Overview
 - Client (GUI): connects to server, requests frames, displays bitmap, forwards input.
 - Server (console): captures screen, sends frames, applies remote input.
@@ -15,20 +19,21 @@ OS: Windows only (WinAPI, WinSock)
 - Server app: `Server/server.cpp` (console main)
 - Protocol: `Shared/Frame.h`
 - Screen capture/diff: `Shared/BmpStream.h`, `Shared/BmpStream.cpp`
-- Compression: `Shared/Compression.h`, `Shared/Compression.cpp`
+- Compression: `Shared/compression.h` (on-disk name; includes may use `Compression.h` on case-insensitive FS), `Shared/Compression.cpp`
 
 ### Build System
 - Project files: `Client/Client.ide`, `Server/Server.ide`, `Tests/Tests.ide`
-- Script: `clean.bat`
-- No README or build docs are present.
+- Scripts: `clean.bat`; **MinGW:** `build_mingw.bat` (default toolchain root `C:\MinGW`, override with env `MINGW_ROOT`), `test_mingw.bat`
+- See `README.md` and `.cursor/steering/MAP_PROJECT.md` for paths and run notes.
 
 ### Runtime Defaults
-- Server listens on TCP port 8080.
-- Client default host is hardcoded in `Client/Client.cpp` (see WM_CREATE).
+- Server listens on TCP port from `Server/config.ini` or `8080`.
+- Client host and port come from command line (`Client/ClientArgs.cpp`); see `Client/client.bat`.
 
 ### Protocol Summary
 - Binary protocol with packed structs in `Shared/Frame.h`.
 - `FrameCmd` header uses magic "CMD", command ID, payload length.
+- Optional: client calls `RemoteClient::SetDiffGrid(w,h)` (8..128); before each `FetchBitmap` the client sends `CMD_SET_DIFF_GRID` with `DataDiffGrid` when the grid changed (default 32×32).
 - `HeaderBmp` header uses magic "BMP", flags, geometry, length.
 - Frame flags:
   - FULL frame vs DIFF frame (XOR diff)
@@ -36,7 +41,7 @@ OS: Windows only (WinAPI, WinSock)
 - Mouse/keyboard payloads use `DataMouse` / `DataKey`.
 
 ### Data Flow
-1. Client connects, sends `CMD_GET_FRAME`.
+1. Client connects; `FetchBitmap` may send `CMD_SET_DIFF_GRID` then `CMD_GET_FRAME`.
 2. Server captures screen via `BmpStream`, computes XOR diff.
 3. Server compresses diff (`Compression::encrypt`) and sends `HeaderBmp` + data.
 4. Client receives header + payload, decompresses if needed, applies XOR diff.

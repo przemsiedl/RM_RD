@@ -47,7 +47,7 @@ Najwazniejsze pliki:
 - `Shared/Frame.h` - kontrakt protokolu binarnego,
 - `Shared/BmpStream.h`
 - `Shared/BmpStream.cpp` - zrzut ekranu i roznice XOR,
-- `Shared/Compression.h`
+- `Shared/compression.h` (nazwa pliku na dysku; include `Compression.h` dziala na Windows)
 - `Shared/Compression.cpp` - kompresja i dekompresja,
 - `Shared/SocketIo.h`
 - `Shared/SocketIo.cpp` - SendAll/RecvAll dla pelnych transferow TCP.
@@ -65,9 +65,17 @@ Najwazniejsze pliki:
 - `README.md` - szybkie wejscie do projektu,
 - `ARCHITECTURE.md` - opis granic odpowiedzialnosci i ryzyk,
 - `REPOSITORY-STRUCTURE.md` - mapa katalogow,
-- `NEXT-STEPS.md` - operacyjna kolejka najblizszych dzialan,
+- `NEXT-STEPS.md` - roadmapa funkcji i wieksze kroki,
 - `AGENTS.md` - wskazowki dla agenta AI,
-- `clean.bat` - czyszczenie artefaktow kompilacji.
+- `clean.bat` - czyszczenie artefaktow kompilacji,
+- `build_mingw.bat`, `test_mingw.bat` - kompilacja i testy pod MinGW (gcc), domyslnie `C:\MinGW`.
+
+### Cursor / reguly sesji
+
+- `.cursor/steering/DECISIONS.md` - decyzje architektoniczne dla tego repo (C++ vs szablon .NET w regolach),
+- `.cursor/steering/INTERFACES.md` - rejestr kontraktow (protokol + naglowki `Shared/`),
+- `.cursor/steering/NEXT-STEPS.md` - krotka kolejka pod workflow Cursor + odnosnik do `NEXT-STEPS.md`,
+- `.cursor/steering/MAP_PROJECT.md` - build, sciezki, testy.
 
 ## Zasady poruszania sie po repo
 
@@ -79,6 +87,5 @@ Najwazniejsze pliki:
 
 ## Obecne braki strukturalne
 
-- W aktualnym workspace nie ma widocznych plikow projektu IDE opisanych w `AGENTS.md`.
-- Nie ma automatycznego opisu kompilacji dla jednego, potwierdzonego toolchaina.
+- Brak jednego, zautomatyzowanego opisu kompilacji dla potwierdzonego toolchaina (pliki `.ide` sa w repo).
 - Testy obejmuja tylko czesc warstwy `Shared`.

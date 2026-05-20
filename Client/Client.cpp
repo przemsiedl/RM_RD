@@ -68,6 +68,10 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
             break;
         }
 
+        // Bez tego przy kazdym InvalidateRect Windows czysci tlo (czarny) przed WM_PAINT = mruganie.
+        case WM_ERASEBKGND:
+            return 1;
+
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
@@ -121,7 +125,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                     g_hBitmap = hBitmap;
                     g_frameCount++;
                     g_lastFrameTime = GetTickCount();
-                    InvalidateRect(hwnd, NULL, TRUE);
+                    InvalidateRect(hwnd, NULL, FALSE);
                 }
             }
             break;
@@ -177,7 +181,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                     g_hBitmap = hBitmap;
                     g_frameCount++;
                     g_lastFrameTime = GetTickCount();
-                    InvalidateRect(hwnd, NULL, TRUE);
+                    InvalidateRect(hwnd, NULL, FALSE);
                 }
                 break;
             }

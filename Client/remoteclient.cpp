@@ -1,10 +1,15 @@
 #include "RemoteClient.h"
 #include "..\Shared\Frame.h"
 #include "..\Shared\Compression.h"
+#include "..\Shared\BmpStream.h"
 #include "..\Shared\SocketIo.h"
 #include <string.h>
 
 RemoteClient::RemoteClient(const char* _host, int _port) {
+    diffBlockW = 32;
+    diffBlockH = 32;
+    diffGridDirty = true;
+
     remoteScreenWidth = 0;
     remoteScreenHeight = 0;
     
@@ -103,6 +108,12 @@ bool RemoteClient::IsConnected() const {
     return (socket != INVALID_SOCKET);
 }
 
+void RemoteClient::SetDiffGrid(int blockW, int blockH) {
+    diffBlockW = blockW;
+    diffBlockH = blockH;
+    diffGridDirty = true;
+}
+
 bool RemoteClient::ReceiveFrameHeader(HeaderBmp& header) {
     return SocketIo::RecvAll(socket, (char*)&header, sizeof(HeaderBmp));
 }
@@ -113,6 +124,10 @@ bool RemoteClient::ValidateFrameHeader(const HeaderBmp& header) const {
 
 bool RemoteClient::HandleNoChangeFrame(const HeaderBmp& header, HBITMAP& result) {
     if ((header.flags & FRAME_FLAG_NOCHANGE) == 0) {
+        return false;
+    }
+    /* TRANSLATION + NOCHANGE: 8 B dx,dy w ReceiveImageData */
+    if ((header.flags & FRAME_FLAG_TRANSLATION) != 0) {
         return false;
     }
     if (header.length != 0 || !hBitmap) {
@@ -166,107 +181,143 @@ bool RemoteClient::EnsureFrameBuffer(int width, int height, int bpp, int stride)
     return true;
 }
 
-// ===== ODBIERANIE DANYCH BEZPOŚREDNIO DO ImageData (POPRAWIONE) =====
+// ===== ODBIERANIE DANYCH BEZPOŚREDNIO DO ImageData =====
 bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
     if (!img || !img->pData || socket == INVALID_SOCKET) {
         return false;
     }
-    
-    // Sprawdź flagi
+
     bool isFullFrame = (header.flags & FRAME_FLAG_FULL) != 0;
     bool isCompressed = (header.flags & FRAME_FLAG_COMPRESSED) != 0;
     bool isNoChange = (header.flags & FRAME_FLAG_NOCHANGE) != 0;
+    bool isBlocks = (header.flags & FRAME_FLAG_BLOCKS) != 0;
+    bool isTrans = (header.flags & FRAME_FLAG_TRANSLATION) != 0;
 
     if (isNoChange) {
-        if (header.length != 0) {
-            return false;
+        if (isTrans) {
+            if (header.length != 8) return false;
+            char prefix[8];
+            if (!SocketIo::RecvAll(socket, prefix, 8)) {
+                Disconnect();
+                return false;
+            }
+            int dx, dy;
+            memcpy(&dx, prefix, 4);
+            memcpy(&dy, prefix + 4, 4);
+            if (!BmpStream::ApplyTranslationResidual(img, dx, dy, NULL, 0, 0, 0))
+                return false;
+            img->isFullFrame = false;
+            return true;
         }
+        if (header.length != 0) return false;
         return true;
     }
 
-    if (header.length <= 0) {
+    if (header.length <= 0) return false;
+
+    if (isFullFrame && isTrans) {
+        /* Pelna klatka bez prefiksu translacji w protokole */
         return false;
     }
-    
-    // Alokuj tymczasowy bufor dla odebranych danych
+
     char* receivedBuffer = new char[header.length];
-    if (!receivedBuffer) {
-        return false;
-    }
-    
+    if (!receivedBuffer) return false;
+
     if (!SocketIo::RecvAll(socket, receivedBuffer, header.length)) {
         delete[] receivedBuffer;
         Disconnect();
         return false;
     }
 
-    // ===== DEKOMPRESJA (jeśli dane są skompresowane) =====
-    char* workingBuffer = NULL;
-    int workingSize = 0;
-    
-    if (isCompressed) {
-        // Alokuj bufor na zdekompresowane dane
-        workingBuffer = new char[img->dataSize];
-        if (! workingBuffer) {
+    int transDx = 0, transDy = 0;
+    const char* payloadStart = receivedBuffer;
+    int payloadLen = header.length;
+    if (isTrans) {
+        if (payloadLen < 8) {
             delete[] receivedBuffer;
             return false;
         }
-        
-        // Dekompresuj
-        Compression::decrypt(receivedBuffer, header.length, workingBuffer, workingSize);
-        
-        // Sprawdź czy rozmiar się zgadza
-        if (workingSize != img->dataSize) {
+        memcpy(&transDx, payloadStart, 4);
+        memcpy(&transDy, payloadStart + 4, 4);
+        payloadStart += 8;
+        payloadLen -= 8;
+    }
+
+    if (!isFullFrame && isBlocks) {
+        if (!isCompressed) {
+            delete[] receivedBuffer;
+            return false;
+        }
+        if (payloadLen < 4) {
+            delete[] receivedBuffer;
+            return false;
+        }
+        if (isTrans) {
+            if (!BmpStream::ApplyTranslationResidual(img, transDx, transDy, NULL, 0, 0, 0)) {
+                delete[] receivedBuffer;
+                return false;
+            }
+        }
+        if (!BmpStream::ApplyPackedBlockDiffs(img, payloadStart, payloadLen)) {
+            delete[] receivedBuffer;
+            return false;
+        }
+        img->isFullFrame = false;
+        delete[] receivedBuffer;
+        return true;
+    }
+
+    int expectedDataSize = (int)img->dataSize;
+
+    char* workingBuffer = NULL;
+    int workingSize = 0;
+
+    if (isCompressed) {
+        int maxDecompressed = expectedDataSize + 4096;
+        workingBuffer = new char[maxDecompressed];
+        if (!workingBuffer) {
+            delete[] receivedBuffer;
+            return false;
+        }
+        Compression::decrypt(payloadStart, payloadLen, workingBuffer, workingSize);
+        if (workingSize != expectedDataSize) {
             delete[] receivedBuffer;
             delete[] workingBuffer;
             return false;
         }
     } else {
-        // Dane nieskompresowane - użyj bezpośrednio
-        workingBuffer = receivedBuffer;
-        workingSize = header.length;
-        if (workingSize != img->dataSize) {
+        workingBuffer = (char*)payloadStart;
+        workingSize = payloadLen;
+        if (workingSize != expectedDataSize) {
             delete[] receivedBuffer;
             return false;
         }
     }
 
-    // ===== APLIKUJ DANE NA BUFOR =====
     if (isFullFrame) {
-        // Pełna klatka - po prostu kopiuj
         memcpy(img->pData, workingBuffer, img->dataSize);
         img->isFullFrame = true;
     } else {
-        // Różnica XOR - aplikuj w miejscu
-        ImageData diffView;
-        diffView.width = img->width;
-        diffView.height = img->height;
-        diffView.bitsPerPixel = img->bitsPerPixel;
-        diffView.stride = img->stride;
-        diffView.dataSize = img->dataSize;
-        diffView.pData = workingBuffer;
-        diffView.isFullFrame = false;
-        diffView.isEmptyDiff = false;
-
-        if (!BmpStream::ApplyDiffXOR(img->pData, &diffView)) {
-            diffView.pData = NULL;
-            delete[] receivedBuffer;
-            if (isCompressed) {
-                delete[] workingBuffer;
+        if (isTrans) {
+            if (!BmpStream::ApplyTranslationResidual(img, transDx, transDy,
+                    workingBuffer, img->stride, img->width, img->height)) {
+                delete[] receivedBuffer;
+                if (isCompressed) delete[] workingBuffer;
+                return false;
             }
-            return false;
+        } else {
+            if (!BmpStream::ApplyDiff(img->pData, img->stride, img->bitsPerPixel,
+                    workingBuffer, img->stride, img->width, img->height, 0, 0, false)) {
+                delete[] receivedBuffer;
+                if (isCompressed) delete[] workingBuffer;
+                return false;
+            }
         }
-
-        diffView.pData = NULL;
         img->isFullFrame = false;
     }
-    
-    // Zwolnij bufory
+
     delete[] receivedBuffer;
-    if (isCompressed) {
-        delete[] workingBuffer;
-    }
-    
+    if (isCompressed) delete[] workingBuffer;
     return true;
 }
 
@@ -292,10 +343,21 @@ bool RemoteClient::SendCommand(const FrameCmd& cmd, const void* data, int dataSi
 
 // ===== POBIERANIE BITMAPY (UPROSZCZONE) =====
 bool RemoteClient::FetchBitmap(HBITMAP& result) {
-    // Wyślij komendę GET_FRAME
+    if (diffGridDirty) {
+        DataDiffGrid dg;
+        dg.blockW = diffBlockW;
+        dg.blockH = diffBlockH;
+        FrameCmd gridCmd;
+        gridCmd.cmd = CMD_SET_DIFF_GRID;
+        if (!SendCommand(gridCmd, &dg, sizeof(dg))) {
+            return false;
+        }
+        diffGridDirty = false;
+    }
+
     FrameCmd cmd;
     cmd.cmd = CMD_GET_FRAME;
-    
+
     if (!SendCommand(cmd)) {
         return false;
     }
@@ -312,9 +374,14 @@ bool RemoteClient::FetchBitmap(HBITMAP& result) {
         return false;
     }
     
-    // Zapewnij bufor odpowiedniego rozmiaru
-    if (!EnsureFrameBuffer(header.width, header.height, 
-                          header.bitsPerPixel, header.stride)) {
+    int bufWidth = header.width;
+    int bufHeight = header.height;
+    if ((header.flags & FRAME_FLAG_BLOCKS) && pFrameBuffer) {
+        bufWidth = pFrameBuffer->width;
+        bufHeight = pFrameBuffer->height;
+    }
+    int bufStride = (header.stride > 0) ? header.stride : ((bufWidth * header.bitsPerPixel + 31) / 32) * 4;
+    if (!EnsureFrameBuffer(bufWidth, bufHeight, header.bitsPerPixel, bufStride)) {
         return false;
     }
 

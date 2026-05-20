@@ -3,6 +3,10 @@
  bool InputExecutor::ExecuteMouseCommand(const FrameCmd& cmd, const DataMouse& data) {
      int screenWidth = GetSystemMetrics(SM_CXSCREEN);
      int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+     if (screenWidth <= 0)
+         screenWidth = 1;
+     if (screenHeight <= 0)
+         screenHeight = 1;
  
      int absX = (data.x * 65535) / screenWidth;
      int absY = (data.y * 65535) / screenHeight;

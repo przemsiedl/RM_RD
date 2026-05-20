@@ -33,7 +33,7 @@ Priorytety projektu:
 - Domyslny port serwera: `8080`.
 - Protokol: wlasny prosty format binarny z naglowkami `FrameCmd` i `HeaderBmp`.
 - Format obrazu: glownie `24 bpp`, z obsluga buforow DIB.
-- Redukcja transferu: diff XOR + flaga `NOCHANGE` + kompresja.
+- Redukcja transferu: diff XOR + flaga `NOCHANGE` + kompresja; przy niewielkim ruchu — **bloczki** (`FRAME_FLAG_BLOCKS`, siatka 32x32), przy duzej zmianie obrazu — jeden skompresowany caly XOR (patrz `Shared/Frame.h`).
 
 ## Uruchamianie
 
@@ -50,7 +50,15 @@ Klient:
 
 ## Uwagi o buildzie
 
-W aktualnym snapshotcie repo widoczne sa pliki zrodlowe i skrypty `.bat`. Dedykowane pliki projektu IDE nie sa obecne w workspace, wiec instrukcje kompilacji trzeba doprecyzowac po odtworzeniu lub wskazaniu uzywanego toolchaina. Przy budowaniu Client i Server dodaj `Shared/SocketIo.cpp` do kompilacji.
+Pliki projektu IDE: `Client/Client.ide`, `Server/Server.ide`, `Tests/Tests.ide`; czyszczenie: `clean.bat`. Przy budowaniu Client i Server dolacz zrodla z `Shared/`, w tym `Shared/SocketIo.cpp`.
+
+**MinGW (gcc):** domyslnie `C:\MinGW` — `build_mingw.bat` (pelny build lub argumenty `CLIENT`, `SERVER`, `TESTS`), testy: `test_mingw.bat`. Inna instalacja: `set MINGW_ROOT=...` przed uruchomieniem skryptu. Skrypt linkuje statycznie `libgcc`/`libstdc++`, zeby `.exe` dzialaly na komputerze bez instalacji MinGW. Szczegoly: `.cursor/steering/MAP_PROJECT.md`.
+
+**Siatka diff (klient):** `RemoteClient::SetDiffGrid(blockW, blockH)` (8..128); przed `GET_FRAME` wysylane jest `CMD_SET_DIFF_GRID` (`DataDiffGrid` w `Frame.h`). Domyslnie 32x32.
+
+## Dla agentow AI (Cursor)
+
+Na poczatku sesji kodowej: `README.md`, `.cursor/steering/DECISIONS.md`, `.cursor/steering/INTERFACES.md`; jesli istnieje – `.cursor/steering/NEXT-STEPS.md`. Kontrakty binarne i naglowki C++: rejestr w `INTERFACES.md`. Pelniejsza roadmapa: `NEXT-STEPS.md` w korzeniu repo.
 
 ## Najwazniejsze cechy projektu
 

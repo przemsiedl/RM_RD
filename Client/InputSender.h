@@ -2,7 +2,7 @@
  #define InputSenderH
  
  #include <windows.h>
- #include "..\Shared\Frame.h"
+ #include "../Shared/Frame.h"
  
  class RemoteClient;
  

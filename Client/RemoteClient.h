@@ -2,8 +2,21 @@
 #define RemoteClientH
 
 #include <windows.h>
-#include "..\Shared\Frame.h"
-#include "..\Shared\BmpStream.h"
+#include "../Shared/Frame.h"
+#include "../Shared/BmpStream.h"
+
+#define RM_INPUT_QUEUE 48
+
+struct RmInputEvent {
+    int cmd;
+    int isKey;
+    int x;
+    int y;
+    int wheel;
+    WORD virtualKey;
+    WORD scanCode;
+    DWORD flags;
+};
 
 class InputSender;
 
@@ -20,7 +33,6 @@ private:
     int bitmapWidth, bitmapHeight;
 
     bool Connect();
-    void Disconnect();
     
     bool SendCommand(const FrameCmd& cmd, const void* data = NULL, int dataSize = 0);
     bool ReceiveFrameHeader(HeaderBmp& header);
@@ -30,12 +42,30 @@ private:
     
     bool CreateOrUpdateBitmap(const ImageData* img);
     
-    // Inicjalizacja/realokacja bufora
+    // Inicjalizacja/realokacja bufora (bity DIB, bez kopii SetDIBits)
     bool EnsureFrameBuffer(int width, int height, int bpp, int stride);
+    char* GrowScratch(char*& buf, int& cap, int need);
 
     int diffBlockW;
     int diffBlockH;
     bool diffGridDirty;
+
+    CRITICAL_SECTION queueSection;
+    CRITICAL_SECTION frameSection;
+    HANDLE inputEvent;
+    RmInputEvent inputQueue[RM_INPUT_QUEUE];
+    int inputHead;
+    int inputCount;
+
+    char* recvScratch;
+    int recvCap;
+    char* decScratch;
+    int decCap;
+
+    FrameDirty lastDirty;
+    bool lastChanged;
+
+    void EnqueueInput(const RmInputEvent& ev);
 
 public:
     RemoteClient(const char* _host, int port = 8080);
@@ -47,7 +77,19 @@ public:
     int remoteScreenHeight;
 
     bool IsConnected() const;
-    bool FetchBitmap(HBITMAP& result);
+    void Disconnect();
+    bool FetchBitmap(HBITMAP& result, bool* frameChanged = NULL);
+
+    // Wejscie z watku UI trafia do kolejki. Socket obsluguje tylko watek sieci.
+    void QueueMouse(int cmd, int x, int y, int wheel);
+    void QueueKey(int cmd, WORD virtualKey, WORD scanCode, DWORD flags);
+    bool HasPendingInput();
+    bool FlushInput();
+    HANDLE GetInputEvent() const { return inputEvent; }
+
+    void LockFrame();
+    void UnlockFrame();
+    bool GetLastDirty(int& x, int& y, int& w, int& h) const;
 
     // Siatka bloczkow XOR wysylana do serwera (CMD_SET_DIFF_GRID) przed kolejnymi GET_FRAME.
     // Wymiary 8..128 pikseli (serwer obcina). Domyslnie 32x32.

@@ -9,7 +9,7 @@
 
 #define MAX_CLIENTS 10
 
-#define MIN_FRAME_INTERVAL_MS 45
+#define MIN_FRAME_INTERVAL_MS 20
 
 struct ClientConnection {
     SOCKET socket;
@@ -19,6 +19,7 @@ struct ClientConnection {
     bool active;
     void* userData;
     ImageData* pLastSentFrame;
+    ImageData* pScratch;
     DWORD lastFrameSendTime;
     int diffBlockW;
     int diffBlockH;
@@ -30,6 +31,7 @@ struct ClientConnection {
         active = false;
         userData = NULL;
         pLastSentFrame = NULL;
+        pScratch = NULL;
         lastFrameSendTime = 0;
         diffBlockW = 32;
         diffBlockH = 32;
@@ -47,6 +49,7 @@ private:
     
     // Provider ramek
     FrameProvider* frameProvider;
+    int captureBpp;
     
     // Lista klientow
     ClientConnection clients[MAX_CLIENTS];
@@ -88,7 +91,7 @@ private:
     bool ProcessKeyCommand(ClientConnection* client, const FrameCmd& cmd);
     
 public:
-    RemoteServer(int _port = 8080);
+    RemoteServer(int _port = 8080, int bpp = 24);
     ~RemoteServer();
     
     // Uruchomienie/zatrzymanie serwera

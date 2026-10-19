@@ -1,4 +1,5 @@
-#include "../Shared/Compression.h"
+#include "../Shared/compression.h"
+#include <windows.h>
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>
@@ -11,8 +12,38 @@ const int MAX_OFFSET = 0x0FFF; // 4095
 const int MAX_LENGTH = 0x0FFF; // 4095
 
 inline unsigned int getHash(const char* p) {
-    unsigned int v = *reinterpret_cast<const unsigned int*>(p);
+    unsigned int v;
+    memcpy(&v, p, 4);
     return ((v >> 16) ^ v) & 0xFFFF;
+}
+
+/* Tablica hasza zyje przez caly proces. Znacznik generacji zamiast memset 256 KB co klatke. */
+struct LzHash {
+    CRITICAL_SECTION cs;
+    int pos[65536];
+    unsigned short stamp[65536];
+    unsigned short generation;
+
+    LzHash() {
+        InitializeCriticalSection(&cs);
+        memset(stamp, 0, sizeof(stamp));
+        generation = 1;
+    }
+
+    ~LzHash() {
+        DeleteCriticalSection(&cs);
+    }
+};
+
+static LzHash g_lz;
+
+static int LookupHash(unsigned int h, int i) {
+    int matchPos = -1;
+    if (g_lz.stamp[h] == g_lz.generation)
+        matchPos = g_lz.pos[h];
+    g_lz.stamp[h] = g_lz.generation;
+    g_lz.pos[h] = i;
+    return matchPos;
 }
 
 inline void encodeOffsetLength(short offset, short length, char*& out) {
@@ -45,8 +76,12 @@ static void EncryptLiteralsOnly(const char* dataIn, int inLength, char* dataOut,
     outLength = (int)(out - dataOut);
 }
 
+static bool PastAbort(const char* dataOut, const char* out, int abortAt) {
+    return abortAt > 0 && (int)(out - dataOut) >= abortAt;
+}
+
 void Compression::encrypt(const char* dataIn, int inLength, char* dataOut, int& outLength,
-    int outBufferBytes) {
+    int outBufferBytes, int abortAt) {
     outLength = 0;
     if (!dataIn || !dataOut || inLength < 0 || outBufferBytes < 1)
         return;
@@ -55,6 +90,8 @@ void Compression::encrypt(const char* dataIn, int inLength, char* dataOut, int& 
         EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
         if (outLength > outBufferBytes)
             outLength = 0;
+        else if (PastAbort(dataOut, dataOut + outLength, abortAt))
+            outLength = -1;
         return;
     }
 
@@ -63,6 +100,8 @@ void Compression::encrypt(const char* dataIn, int inLength, char* dataOut, int& 
         EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
         if (outLength > outBufferBytes)
             outLength = 0;
+        else if (PastAbort(dataOut, dataOut + outLength, abortAt))
+            outLength = -1;
         return;
     }
     int minForLz = inLength * 2 + 4096;
@@ -70,24 +109,25 @@ void Compression::encrypt(const char* dataIn, int inLength, char* dataOut, int& 
         EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
         if (outLength > outBufferBytes)
             outLength = 0;
+        else if (PastAbort(dataOut, dataOut + outLength, abortAt))
+            outLength = -1;
         return;
     }
 
-    int* hashTable = (int*)malloc(65536u * sizeof(int));
-    if (!hashTable) {
-        EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
-        if (outLength > outBufferBytes)
-            outLength = 0;
-        return;
+    EnterCriticalSection(&g_lz.cs);
+    g_lz.generation++;
+    if (g_lz.generation == 0) {
+        memset(g_lz.stamp, 0, sizeof(g_lz.stamp));
+        g_lz.generation = 1;
     }
-    memset(hashTable, 0xFF, 65536u * sizeof(int));
+
     char* out = dataOut;
     int i = 0;
+    bool aborted = false;
 
     while (i < inLength - MIN_MATCH) {
         unsigned int h = getHash(&dataIn[i]);
-        int matchPos = hashTable[h];
-        hashTable[h] = i;
+        int matchPos = LookupHash(h, i);
 
         short bestOffset = 0;
         short bestLength = 0;
@@ -109,7 +149,7 @@ void Compression::encrypt(const char* dataIn, int inLength, char* dataOut, int& 
             encodeOffsetLength(bestOffset, bestLength, out);
             for (int k = 1; k < bestLength; k++) {
                 if (i + k < inLength - MIN_MATCH)
-                    hashTable[getHash(&dataIn[i + k])] = i + k;
+                    LookupHash(getHash(&dataIn[i + k]), i + k);
             }
             i += bestLength;
         } else {
@@ -120,23 +160,42 @@ void Compression::encrypt(const char* dataIn, int inLength, char* dataOut, int& 
             } else
                 *out++ = (char)b;
         }
+
+        if (PastAbort(dataOut, out, abortAt)) {
+            aborted = true;
+            break;
+        }
     }
 
-    while (i < inLength) {
-        unsigned char b = (unsigned char)dataIn[i++];
-        if (b == (unsigned char)ESC) {
-            *out++ = ESC;
-            *out++ = ESC;
-        } else
-            *out++ = (char)b;
+    if (!aborted) {
+        while (i < inLength) {
+            unsigned char b = (unsigned char)dataIn[i++];
+            if (b == (unsigned char)ESC) {
+                *out++ = ESC;
+                *out++ = ESC;
+            } else
+                *out++ = (char)b;
+            if (PastAbort(dataOut, out, abortAt)) {
+                aborted = true;
+                break;
+            }
+        }
     }
 
-    free(hashTable);
+    LeaveCriticalSection(&g_lz.cs);
+
+    if (aborted) {
+        outLength = -1;
+        return;
+    }
+
     outLength = (int)(out - dataOut);
     if (outLength > outBufferBytes) {
         EncryptLiteralsOnly(dataIn, inLength, dataOut, outLength);
         if (outLength > outBufferBytes)
             outLength = 0;
+        else if (PastAbort(dataOut, dataOut + outLength, abortAt))
+            outLength = -1;
     }
 }
 

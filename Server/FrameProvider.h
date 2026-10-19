@@ -17,17 +17,23 @@ private:
     ImageData* pCurrentFrame;
     HANDLE captureThread;
     volatile long captureRunning;
+    volatile DWORD lastConsumerTick;
 
     void CaptureLoop();
     static DWORD WINAPI CaptureThreadProc(LPVOID param);
     bool ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame, int diffBlockW, int diffBlockH);
+    bool BuildFromSnapshot(ImageData* current, ImageData* lastSent, FrameBmp& frame,
+        int diffBlockW, int diffBlockH);
+    DWORD SuggestedCaptureSleep() const;
 
 public:
     explicit FrameProvider(int bpp = 24);
     ~FrameProvider();
 
     void SetFrameGenerator(FrameGeneratorCallback callback, void* userData = NULL);
-    bool GetFrame(FrameBmp& frame, ImageData* lastSentFrame, int diffBlockW, int diffBlockH);
+    /* scratch: bufor roboczy klienta (pelna klatka), zeby nie alokowac jej przy kazdym zadaniu. */
+    bool GetFrame(FrameBmp& frame, ImageData* lastSentFrame, ImageData* scratch,
+        int diffBlockW, int diffBlockH);
 
     void StartCaptureThread();
     void StopCaptureThread();

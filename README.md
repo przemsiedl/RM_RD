@@ -32,15 +32,16 @@ Priorytety projektu:
 - Transport: TCP.
 - Domyslny port serwera: `8080`.
 - Protokol: wlasny prosty format binarny z naglowkami `FrameCmd` i `HeaderBmp`.
-- Format obrazu: glownie `24 bpp`, z obsluga buforow DIB.
-- Redukcja transferu: diff XOR + flaga `NOCHANGE` + kompresja; przy niewielkim ruchu — **bloczki** (`FRAME_FLAG_BLOCKS`, siatka 32x32), przy duzej zmianie obrazu — jeden skompresowany caly XOR (patrz `Shared/Frame.h`).
+- Format obrazu: `24 bpp` domyslnie, opcjonalnie `16` lub `32` (`Bpp` w `Server/config.ini`). Naglowek `HeaderBmp.bitsPerPixel` mowi klientowi, jak interpretowac bufor.
+- Redukcja transferu: diff XOR + flaga `NOCHANGE` + kompresja. Przy niewielkim ruchu serwer sklada **bloczki** (`FRAME_FLAG_BLOCKS`) bez budowania pelnego bufora XOR. Przy duzej zmianie — jeden XOR calej klatki. Jesli LZ nie zmniejsza payloadu, serwer wysyla surowe bajty (bez `FRAME_FLAG_COMPRESSED`). Przy srednim ruchu moze dojsc globalne przesuniecie (`FRAME_FLAG_TRANSLATION`).
 
 ## Uruchamianie
 
 Serwer:
 
-- plik konfiguracyjny: `Server/config.ini`,
+- plik konfiguracyjny: `Server/config.ini` (`Port`, opcjonalnie `Bpp` = 16, 24 albo 32),
 - uruchom aplikacje serwera; nasluchuje na porcie z konfiguracji albo `8080`.
+- `Bpp=16` obcina RAM i lacze (okno 1024x768: ok. 1,5 MB surowizny zamiast 2,3 MB) kosztem kolorow. Na slabym PC albo wolnym laczem warto zejsc z 24.
 
 Klient:
 
@@ -59,6 +60,17 @@ Pliki projektu IDE: `Client/Client.ide`, `Server/Server.ide`, `Tests/Tests.ide`;
 ## Dla agentow AI (Cursor)
 
 Na poczatku sesji kodowej: `README.md`, `.cursor/steering/DECISIONS.md`, `.cursor/steering/INTERFACES.md`; jesli istnieje – `.cursor/steering/NEXT-STEPS.md`. Kontrakty binarne i naglowki C++: rejestr w `INTERFACES.md`. Pelniejsza roadmapa: `NEXT-STEPS.md` w korzeniu repo.
+
+## Wydajnosc sciezki klatki
+
+- Serwer trzyma jedna sekcje DIB miedzy zrzutami i dwa bufory pikseli, zamiast tworzyc je od nowa co klatke.
+- Gdy nikt nie prosi o obraz, watek zrzutu zwalnia (ok. 400 ms). Przy aktywnym kliencie zrzut jest czestszy.
+- Identyczna klatka konczy sie na `memcmp` i `NOCHANGE` — bez XOR i bez kompresji.
+- Maly ruch (kursor, wpisywanie) idzie bloczkami XOR. Szukanie globalnego przesuniecia odpala sie tylko wtedy, gdy zmieniona powierzchnia jest srednia; kursor go nie uruchamia.
+- Kompresja trzyma jedna tablice hasza (znacznik generacji zamiast czyszczenia 256 KB przy kazdym bloku).
+- Klient trzyma sekcje DIB i bufory odbioru. Nie zmieniajace sie klatki nie przerysowuja calego okna; zmiana odswieza tylko brudny prostokat (po skalowaniu do okna).
+- Pobieranie klatek idzie w osobnym watku. Wejscie myszy i klawiatury jest kolejkowane z watku UI i wysylane miedzy klatkami, wiec wolny odbiór nie zamraza okna.
+- Tempo prosb o klatke zalezy od czasu ostatniego odbioru: szybka siec idzie do ok. 30 klatek/s, bezczynny ekran zwalnia do ok. 5/s, wolne lacze wydluza odstep, zeby nie zapychac kolejki.
 
 ## Najwazniejsze cechy projektu
 

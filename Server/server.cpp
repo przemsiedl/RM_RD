@@ -7,7 +7,8 @@ int main() {
     printf("=== Remote Screen Server ===\n\n");
 
     int port = LoadPortFromConfig();
-    RemoteServer server(port);
+    int bpp = LoadBitsPerPixelFromConfig();
+    RemoteServer server(port, bpp);
 
     if (!server.Start()) {
         printf("BLAD: Nie mozna uruchomic serwera!\n");
@@ -15,7 +16,7 @@ int main() {
         return 1;
     }
     
-    printf("Serwer dziala na porcie %d\n", server.GetPort());
+    printf("Serwer dziala na porcie %d, zrzut %d bpp\n", server.GetPort(), bpp);
     printf("Czekam na polaczenia...\n");
     printf("\nNacisnij ESC aby zatrzymac serwer.\n\n");
 

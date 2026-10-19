@@ -78,7 +78,7 @@ struct DataDiffGrid {
 // Flagi dla HeaderBmp
 #define FRAME_FLAG_FULL       0x01  // Pelna klatka (nie roznica)
 #define FRAME_FLAG_DIFF       0x02  // Klatka roznicowa (XOR do poprzedniej klatki)
-#define FRAME_FLAG_COMPRESSED 0x04  // Dane skompresowane (lub kazdy blok w BLOCKS)
+#define FRAME_FLAG_COMPRESSED 0x04  // Dane skompresowane (lub kazdy blok w BLOCKS). Brak flagi = surowe bajty.
 #define FRAME_FLAG_NOCHANGE   0x08  // Brak zmian (brak payloadu)
 #define FRAME_FLAG_PARTIAL    0x10  // [deprecated] pojedynczy prostokat — nie uzywane
 #define FRAME_FLAG_BLOCKS     0x20  // Wiele bloczkow (ruch): payload = blokowy batch (patrz nizej)

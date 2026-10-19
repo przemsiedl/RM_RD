@@ -1,4 +1,4 @@
-#include "..\Shared\SocketIo.h"
+#include "../Shared/SocketIo.h"
 
 bool SocketIo::SendAll(SOCKET s, const char* data, int size) {
     if (!data || size <= 0) {

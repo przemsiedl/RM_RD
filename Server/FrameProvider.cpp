@@ -1,5 +1,5 @@
 #include "FrameProvider.h"
-#include "../Shared/Compression.h"
+#include "../Shared/compression.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +27,7 @@ FrameProvider::FrameProvider(int bpp) {
     pCurrentFrame = NULL;
     captureThread = NULL;
     captureRunning = 0;
+    lastConsumerTick = 0;
     InitializeCriticalSection(&frameSection);
 }
 
@@ -49,7 +50,8 @@ void FrameProvider::SetFrameGenerator(FrameGeneratorCallback callback, void* use
 }
 
 void FrameProvider::CaptureLoop() {
-    pBmpStream->Capture();
+    if (!pBmpStream->Capture())
+        return;
     EnterCriticalSection(&frameSection);
     if (!pCurrentFrame) {
         pCurrentFrame = new ImageData();
@@ -58,12 +60,24 @@ void FrameProvider::CaptureLoop() {
     LeaveCriticalSection(&frameSection);
 }
 
+DWORD FrameProvider::SuggestedCaptureSleep() const {
+    DWORD last = lastConsumerTick;
+    DWORD now = GetTickCount();
+    /* Brak klienta: rzadki zrzut, zeby nie grzac CPU. */
+    if (last == 0 || (now - last) > 800)
+        return 400;
+    return 35;
+}
+
 DWORD WINAPI FrameProvider::CaptureThreadProc(LPVOID param) {
     FrameProvider* self = (FrameProvider*)param;
     while (self->captureRunning) {
         self->CaptureLoop();
-        for (int i = 0; i < 5 && self->captureRunning; i++) {
+        DWORD ms = self->SuggestedCaptureSleep();
+        DWORD slept = 0;
+        while (slept < ms && self->captureRunning) {
             Sleep(10);
+            slept += 10;
         }
     }
     return 0;
@@ -71,7 +85,8 @@ DWORD WINAPI FrameProvider::CaptureThreadProc(LPVOID param) {
 
 void FrameProvider::StartCaptureThread() {
     if (captureThread) return;
-    pBmpStream->Capture();
+    if (!pBmpStream->Capture())
+        return;
     pCurrentFrame = new ImageData();
     pBmpStream->CopyCurrentTo(pCurrentFrame, 0, 0, pBmpStream->GetWidth(), pBmpStream->GetHeight());
     captureRunning = 1;
@@ -91,11 +106,53 @@ void FrameProvider::StopCaptureThread() {
     }
 }
 
-bool FrameProvider::GetFrame(FrameBmp& frame, ImageData* lastSentFrame,
+static bool CopyImageInto(const ImageData* src, ImageData* dst) {
+    if (!src || !src->pData || !dst) return false;
+    if (!dst->pData || dst->width != src->width || dst->height != src->height ||
+        dst->stride != src->stride || dst->bitsPerPixel != src->bitsPerPixel ||
+        dst->dataSize != src->dataSize) {
+        if (dst->pData) delete[] dst->pData;
+        dst->width = src->width;
+        dst->height = src->height;
+        dst->bitsPerPixel = src->bitsPerPixel;
+        dst->stride = src->stride;
+        dst->dataSize = src->dataSize;
+        dst->pData = new char[src->dataSize];
+        if (!dst->pData) return false;
+    }
+    CopyMemory(dst->pData, src->pData, src->dataSize);
+    dst->isFullFrame = src->isFullFrame;
+    dst->isEmptyDiff = src->isEmptyDiff;
+    return true;
+}
+
+static void FillNoChange(FrameBmp& frame, int w, int h, int bpp, int stride) {
+    frame.header.bitsPerPixel = bpp;
+    frame.header.stride = stride;
+    frame.header.flags = FRAME_FLAG_DIFF | FRAME_FLAG_NOCHANGE;
+    frame.header.x = 0;
+    frame.header.y = 0;
+    frame.header.width = w;
+    frame.header.height = h;
+    frame.header.length = 0;
+    frame.data.Reset();
+}
+
+static bool SameFrameGeom(const ImageData* a, const ImageData* b) {
+    return a && b && a->pData && b->pData &&
+        a->width == b->width && a->height == b->height &&
+        a->stride == b->stride && a->bitsPerPixel == b->bitsPerPixel;
+}
+
+bool FrameProvider::GetFrame(FrameBmp& frame, ImageData* lastSentFrame, ImageData* scratch,
         int diffBlockW, int diffBlockH) {
     if (frameCallback) {
         return frameCallback(frame, callbackUserData);
     }
+    if (!scratch)
+        return false;
+
+    lastConsumerTick = GetTickCount();
 
     EnterCriticalSection(&frameSection);
     if (!pCurrentFrame || !pCurrentFrame->pData) {
@@ -103,73 +160,111 @@ bool FrameProvider::GetFrame(FrameBmp& frame, ImageData* lastSentFrame,
         return false;
     }
 
-    ImageData diff;
+    int w = pCurrentFrame->width;
+    int h = pCurrentFrame->height;
+    int bpp = pCurrentFrame->bitsPerPixel;
+    int stride = pCurrentFrame->stride;
+    long dataSize = pCurrentFrame->dataSize;
+
+    bool same = SameFrameGeom(pCurrentFrame, lastSentFrame);
+    if (same && memcmp(pCurrentFrame->pData, lastSentFrame->pData, (size_t)dataSize) == 0) {
+        LeaveCriticalSection(&frameSection);
+        FillNoChange(frame, w, h, bpp, stride);
+        return true;
+    }
+
+    if (!CopyImageInto(pCurrentFrame, scratch)) {
+        LeaveCriticalSection(&frameSection);
+        return false;
+    }
+    LeaveCriticalSection(&frameSection);
+
+    bool ok = BuildFromSnapshot(scratch, same ? lastSentFrame : NULL, frame, diffBlockW, diffBlockH);
+    if (ok && lastSentFrame)
+        ok = CopyImageInto(scratch, lastSentFrame);
+    return ok;
+}
+
+bool FrameProvider::BuildFromSnapshot(ImageData* current, ImageData* lastSent, FrameBmp& frame,
+        int diffBlockW, int diffBlockH) {
+    if (!current || !current->pData)
+        return false;
+
+    if (!lastSent) {
+        current->isFullFrame = true;
+        current->isEmptyDiff = false;
+        return ImageDataToFrameBmp(current, frame, diffBlockW, diffBlockH);
+    }
+
+    float ratio = BmpStream::MeasureDirtyRatio(current, lastSent, diffBlockW, diffBlockH);
+    if (ratio <= 0.0f) {
+        FillNoChange(frame, current->width, current->height, current->bitsPerPixel, current->stride);
+        return true;
+    }
+
+    /* Translacja tylko przy srednim ruchu. Kursor jej nie potrzebuje, a szukanie jest drogie. */
     bool useTrans = false;
     int tdx = 0, tdy = 0;
-
-    if (lastSentFrame && lastSentFrame->pData &&
-        lastSentFrame->width == pCurrentFrame->width &&
-        lastSentFrame->height == pCurrentFrame->height &&
-        lastSentFrame->stride == pCurrentFrame->stride &&
-        lastSentFrame->bitsPerPixel == pCurrentFrame->bitsPerPixel) {
-        useTrans = BmpStream::TryGlobalTranslationDiff(
-            pCurrentFrame, lastSentFrame, &diff, &tdx, &tdy);
+    ImageData diff;
+    if (ratio >= 0.12f && ratio < 1.0f) {
+        useTrans = BmpStream::TryGlobalTranslationDiff(current, lastSent, &diff, &tdx, &tdy);
     }
 
-    if (!useTrans) {
-        if (!BmpStream::ComputeDiff(pCurrentFrame, lastSentFrame, &diff,
-                0, 0, pCurrentFrame->width, pCurrentFrame->height)) {
-            LeaveCriticalSection(&frameSection);
-            return false;
-        }
-    }
-
-    bool ok = false;
     if (useTrans && diff.isEmptyDiff) {
-        frame.header.bitsPerPixel = pCurrentFrame->bitsPerPixel;
-        frame.header.stride = pCurrentFrame->stride;
+        frame.header.bitsPerPixel = current->bitsPerPixel;
+        frame.header.stride = current->stride;
         frame.header.flags = FRAME_FLAG_DIFF | FRAME_FLAG_NOCHANGE | FRAME_FLAG_TRANSLATION;
         frame.header.x = 0;
         frame.header.y = 0;
-        frame.header.width = pCurrentFrame->width;
-        frame.header.height = pCurrentFrame->height;
+        frame.header.width = current->width;
+        frame.header.height = current->height;
         frame.header.length = 8;
         char* prefix = (char*)malloc(8);
-        if (!prefix) {
-            LeaveCriticalSection(&frameSection);
+        if (!prefix)
             return false;
-        }
         memcpy(prefix, &tdx, 4);
         memcpy(prefix + 4, &tdy, 4);
         frame.data.SetReferenceWithOwn(prefix);
-        ok = true;
-    } else {
-        ok = ImageDataToFrameBmp(&diff, frame, diffBlockW, diffBlockH);
-        if (ok && useTrans && !AttachTranslationPrefix(frame, tdx, tdy))
-            ok = false;
+        return true;
     }
 
-    if (ok && lastSentFrame) {
-        if (lastSentFrame->width != pCurrentFrame->width ||
-            lastSentFrame->height != pCurrentFrame->height ||
-            lastSentFrame->stride != pCurrentFrame->stride) {
-            if (lastSentFrame->pData) delete[] lastSentFrame->pData;
-            lastSentFrame->width = pCurrentFrame->width;
-            lastSentFrame->height = pCurrentFrame->height;
-            lastSentFrame->bitsPerPixel = pCurrentFrame->bitsPerPixel;
-            lastSentFrame->stride = pCurrentFrame->stride;
-            lastSentFrame->dataSize = pCurrentFrame->dataSize;
-            lastSentFrame->pData = new char[pCurrentFrame->dataSize];
-        }
-        if (lastSentFrame->pData) {
-            CopyMemory(lastSentFrame->pData, pCurrentFrame->pData, pCurrentFrame->dataSize);
-        } else {
+    if (useTrans) {
+        bool ok = ImageDataToFrameBmp(&diff, frame, diffBlockW, diffBlockH);
+        if (ok && !AttachTranslationPrefix(frame, tdx, tdy))
             ok = false;
-        }
+        return ok;
     }
 
-    LeaveCriticalSection(&frameSection);
-    return ok;
+    if (ratio < 1.0f) {
+        char* payload = NULL;
+        int plen = 0;
+        int st = BmpStream::PackChangedBlocks(current, lastSent, diffBlockW, diffBlockH,
+            0.7f, &payload, &plen);
+        if (st == BLOCK_PACK_NOCHANGE) {
+            FillNoChange(frame, current->width, current->height, current->bitsPerPixel, current->stride);
+            return true;
+        }
+        if (st == BLOCK_PACK_OK && payload && plen > 0) {
+            frame.header.bitsPerPixel = current->bitsPerPixel;
+            frame.header.stride = current->stride;
+            frame.header.flags = FRAME_FLAG_DIFF | FRAME_FLAG_COMPRESSED | FRAME_FLAG_BLOCKS;
+            frame.header.x = 0;
+            frame.header.y = 0;
+            frame.header.width = current->width;
+            frame.header.height = current->height;
+            frame.header.length = plen;
+            frame.data.SetReferenceWithOwn(payload);
+            return true;
+        }
+        if (payload)
+            delete[] payload;
+        if (st == BLOCK_PACK_ERROR)
+            return false;
+    }
+
+    if (!BmpStream::ComputeDiff(current, lastSent, &diff, 0, 0, current->width, current->height))
+        return false;
+    return ImageDataToFrameBmp(&diff, frame, diffBlockW, diffBlockH);
 }
 
 bool FrameProvider::ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame,
@@ -222,10 +317,23 @@ bool FrameProvider::ImageDataToFrameBmp(const ImageData* img, FrameBmp& frame,
     if (!compressedData) return false;
     int compressedSize = 0;
 
-    Compression::encrypt(img->pData, img->dataSize, compressedData, compressedSize, maxCompressedSize);
+    /* Przerywamy, gdy LZ nie schodzi ponizej surowego rozmiaru — klient umie odebrac dane bez flagi COMPRESSED. */
+    Compression::encrypt(img->pData, (int)img->dataSize, compressedData, compressedSize, maxCompressedSize,
+        (int)img->dataSize);
 
-    frame.data.SetReferenceWithOwn(compressedData);
-    frame.header.flags |= FRAME_FLAG_COMPRESSED;
-    frame.header.length = compressedSize;
+    if (compressedSize > 0 && compressedSize < (int)img->dataSize) {
+        frame.data.SetReferenceWithOwn(compressedData);
+        frame.header.flags |= FRAME_FLAG_COMPRESSED;
+        frame.header.length = compressedSize;
+        return true;
+    }
+
+    delete[] compressedData;
+    if (img->dataSize <= 0)
+        return false;
+    char* raw = new char[img->dataSize];
+    CopyMemory(raw, img->pData, img->dataSize);
+    frame.data.SetReferenceWithOwn(raw);
+    frame.header.length = (int)img->dataSize;
     return true;
 }

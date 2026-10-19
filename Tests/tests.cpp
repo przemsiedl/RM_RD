@@ -5,7 +5,7 @@
  * Opcje: tests.exe -v  (statystyki kompresji na stdout)
  */
 
-#include "../Shared/Compression.h"
+#include "../Shared/compression.h"
 #include "../Shared/BmpStream.h"
 #include "../Shared/Frame.h"
 #include <stdio.h>
@@ -231,7 +231,7 @@ static void FreeWirePayload(char* p) {
 
 /* Alokacja obrazu DIB (stride wyrownany do 4) */
 static bool AllocImage(ImageData* img, int w, int h, int bpp) {
-    if (w <= 0 || h <= 0 || (bpp != 24 && bpp != 32)) return false;
+    if (w <= 0 || h <= 0 || (bpp != 16 && bpp != 24 && bpp != 32)) return false;
     int stride = ((w * bpp + 31) / 32) * 4;
     long ds = (long)stride * h;
     img->width = w;
@@ -316,7 +316,8 @@ static int TestCompressionEdgeCases() {
 static int TestEncryptRegionStride() {
     /* Szerokosc 5 px * 3 bpp = 15 -> stride regionu 16; padding zerami (jak encryptRegion) */
     const int W = 5, H = 3, bpp = 3;
-    int srcStride = ((W * bpp + 31) / 32) * 4;
+    /* bpp to bajty na piksel; stride DIB liczymy z bitow, inaczej bufor jest za maly. */
+    int srcStride = ((W * (bpp * 8) + 31) / 32) * 4;
     long srcSize = (long)srcStride * H;
     char* src = (char*)malloc((size_t)srcSize);
     if (!src) {
@@ -391,7 +392,7 @@ static int TestEncryptRegionStride() {
 /* Uproszczone: porownanie plain po decrypt z powtorna ekstrakcja z src – weryfikacja przez re-encryptRegion temp */
 static int TestEncryptRegionSubRect() {
     const int W = 20, H = 20, bpp = 3;
-    int stride = ((W * bpp + 31) / 32) * 4;
+    int stride = ((W * (bpp * 8) + 31) / 32) * 4;
     long sz = (long)stride * H;
     char* src = (char*)malloc((size_t)sz);
     if (!src) return 1;
@@ -1105,6 +1106,114 @@ static int TestTranslationDetectAndApply() {
 }
 
 /* TRANSLATION + NOCHANGE: samo przesuniecie bufora (8 B na kablu) */
+static int TestPackChangedBlocksRoundTrip() {
+    const int W = 64, H = 48;
+    ImageData prev, cur;
+    if (!AllocImage(&prev, W, H, 24) || !AllocImage(&cur, W, H, 24))
+        return 1;
+    FillSolid(&prev, 1, 2, 3);
+    memcpy(cur.pData, prev.pData, (size_t)cur.dataSize);
+    cur.pData[8 * cur.stride + 9 * 3 + 1] = (char)0xAB;
+
+    if (BmpStream::MeasureDirtyRatio(&cur, &prev, 32, 32) <= 0.0f) {
+        printf("FAIL PackChangedBlocks: ratio\n");
+        return 1;
+    }
+
+    char* payload = NULL;
+    int plen = 0;
+    int st = BmpStream::PackChangedBlocks(&cur, &prev, 32, 32, 0.7f, &payload, &plen);
+    if (st != BLOCK_PACK_OK || !payload) {
+        printf("FAIL PackChangedBlocks: status %d\n", st);
+        delete[] payload;
+        return 1;
+    }
+
+    ImageData recv;
+    if (!AllocImage(&recv, W, H, 24)) {
+        delete[] payload;
+        return 1;
+    }
+    memcpy(recv.pData, prev.pData, (size_t)prev.dataSize);
+    if (!BmpStream::ApplyPackedBlockDiffs(&recv, payload, plen, NULL)) {
+        printf("FAIL PackChangedBlocks: apply\n");
+        delete[] payload;
+        return 1;
+    }
+    delete[] payload;
+    if (!BuffersEqual(cur.pData, recv.pData, (int)cur.dataSize)) {
+        printf("FAIL PackChangedBlocks: pixels\n");
+        return 1;
+    }
+
+    int stSame = BmpStream::PackChangedBlocks(&cur, &cur, 32, 32, 0.7f, &payload, &plen);
+    if (stSame != BLOCK_PACK_NOCHANGE) {
+        printf("FAIL PackChangedBlocks: expected NOCHANGE\n");
+        delete[] payload;
+        return 1;
+    }
+
+    printf("PackChangedBlocks round-trip OK.\n");
+    return 0;
+}
+
+static int TestPipeline16bpp() {
+    ImageData prev, cur;
+    if (!AllocImage(&prev, 32, 16, 16) || !AllocImage(&cur, 32, 16, 16))
+        return 1;
+    FillPseudoRandom(prev.pData, (int)prev.dataSize, 0x1616u);
+    memcpy(cur.pData, prev.pData, (size_t)prev.dataSize);
+    cur.pData[4 * cur.stride + 6 * 2] ^= (char)0xFF;
+
+    ImageData diff;
+    if (!BmpStream::ComputeDiff(&cur, &prev, &diff, 0, 0, cur.width, cur.height))
+        return 1;
+
+    HeaderBmp hdr;
+    char* payload = NULL;
+    int plen = 0;
+    if (!BuildWireFromImage(&diff, &hdr, &payload, &plen, 16, 16))
+        return 1;
+
+    ImageData recv;
+    if (!AllocImage(&recv, 32, 16, 16)) {
+        FreeWirePayload(payload);
+        return 1;
+    }
+    memcpy(recv.pData, prev.pData, (size_t)prev.dataSize);
+    if (!SimulateReceiveImageData(&recv, hdr, payload)) {
+        printf("FAIL 16bpp pipeline receive\n");
+        FreeWirePayload(payload);
+        return 1;
+    }
+    FreeWirePayload(payload);
+    if (!BuffersEqual(cur.pData, recv.pData, (int)cur.dataSize)) {
+        printf("FAIL 16bpp pipeline pixels\n");
+        return 1;
+    }
+    printf("Pipeline 16bpp OK.\n");
+    return 0;
+}
+
+static int TestEncryptAbort() {
+    const int n = 8000;
+    char* buf = (char*)malloc((size_t)n);
+    if (!buf) return 1;
+    FillPseudoRandom(buf, n, 0xA5A5A5A5u);
+    int maxOut = n * 2 + 4096;
+    char* out = (char*)malloc((size_t)maxOut);
+    int cl = 0;
+    Compression::encrypt(buf, n, out, cl, maxOut, n / 4);
+    free(buf);
+    free(out);
+    if (cl != -1) {
+        printf("FAIL encrypt abort: expected -1, got %d\n", cl);
+        return 1;
+    }
+    printf("Encrypt abort OK.\n");
+    return 0;
+}
+
 static int TestTranslationNoChangeWire() {
     const int W = 48, H = 48;
     ImageData client, expect;
@@ -1180,6 +1289,9 @@ int main(int argc, char** argv) {
     failures += TestFinerGridMoreBlocksAndOverhead();
     failures += TestTranslationDetectAndApply();
     failures += TestTranslationNoChangeWire();
+    failures += TestPackChangedBlocksRoundTrip();
+    failures += TestPipeline16bpp();
+    failures += TestEncryptAbort();
     failures += TestLoadBinRoundTrip("Tests/data/ramp4k.bin", "ramp4k.bin");
     failures += TestLoadGradientRaw();
 

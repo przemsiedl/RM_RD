@@ -79,11 +79,13 @@ Minimalna warstwa weryfikacyjna:
 
 ### Wydajnosc
 
-- `24 bpp` ogranicza rozmiar przesylanych danych.
-- XOR diff zmniejsza payload przy niewielkich zmianach ekranu.
-- Flaga `FRAME_FLAG_NOCHANGE` pozwala pominac wysylke danych bez zmian.
-- Kompresja dziala na surowych buforach bez kosztownego mapowania obiektow.
-- `TCP_NODELAY` zmniejsza opoznienia dla malych komunikatow sterujacych.
+- `24 bpp` jest domyslne; `16 bpp` (config `Bpp`) obcina bufor i lacze o okolo jedna trzecia.
+- XOR diff zmniejsza payload przy niewielkich zmianach ekranu. Przy malym ruchu serwer nie buduje pelnej plaszczyzny XOR — porownuje komorki siatki i kompresuje tylko brudne.
+- Flaga `FRAME_FLAG_NOCHANGE` po `memcmp` pomija XOR, kompresje i przerysowanie.
+- Globalne przesuniecie (`TryGlobalTranslationDiff`) liczy blad tylko na wspolnym obszarze i startuje, gdy zmienione jest co najmniej ok. 12% ekranu, a mniej niz ok. 70%. Kursor i pelna zmiana sceny go omijaja.
+- Kompresja LZ uzywa stalej tablicy hasza. Gdy wynik nie jest mniejszy od surowych danych, na kabel ida bajty bez flagi `COMPRESSED` (klient obsluguje oba warianty).
+- Klient rysuje z sekcji DIB i uniewaznia tylko brudny prostokat. Odswiezanie i wejscie sa rozdzielone: watek sieci bierze klatki, UI tylko kolejkuje mysz i klawiature.
+- Zrzut ekranu spi, gdy od ostatniego `GET_FRAME` minelo duzo czasu. Klient sam wydluza odstep, gdy runda trwa dluzej albo ekran stoi.
 
 ### Kompatybilnosc ze starszym Windows
 
@@ -95,9 +97,9 @@ Minimalna warstwa weryfikacyjna:
 
 ### high
 
-- `Server/RemoteServer.cpp`: jeden `FrameProvider` jest wspoldzielony miedzy klientami, a stan diffu jest resetowany w watkach klientow. To moze prowadzic do niespojnosci ramek przy wielu klientach.
+- `Server/RemoteServer.cpp`: jeden zrzut jest wspolny, a diff jest liczony per klient (`pLastSentFrame`). Przy wielu klientach kazdy i tak kopiuje pelna klatke do swojego bufora roboczego. To jest spojne, ale przy kilku odbiorcach koszt pamieci rosnie liniowo (dwa pelne bufory na klienta).
 
-- `Client/Client.cpp`: dla kazdej odebranej klatki tworzona jest nowa `HBITMAP`. To jest proste, ale kosztowne dla CPU/GDI i moze ograniczac plynosc na slabszych maszynach.
+- Sekcja krytyczna zrzutu obejmuje tylko publikacje i kopie migawki. Diff i kompresja ida poza nia, wiec wolny klient nie blokuje `BitBlt`. Tablica hasza kompresji ma wlasny zamek.
 
 ### medium
 
@@ -121,3 +123,5 @@ Priorytetem powinny byc tylko takie zmiany, ktore:
 - nie komplikuja przeplywu danych,
 - poprawiaja stabilnosc lub koszt goracej sciezki,
 - daja sie zweryfikowac malymi testami.
+
+Nastepne sensowne kroki sa w `NEXT-STEPS.md`.

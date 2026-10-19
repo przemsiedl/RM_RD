@@ -1,8 +1,8 @@
 #include "RemoteClient.h"
-#include "..\Shared\Frame.h"
-#include "..\Shared\Compression.h"
-#include "..\Shared\BmpStream.h"
-#include "..\Shared\SocketIo.h"
+#include "../Shared/Frame.h"
+#include "../Shared/compression.h"
+#include "../Shared/BmpStream.h"
+#include "../Shared/SocketIo.h"
 #include <string.h>
 
 RemoteClient::RemoteClient(const char* _host, int _port) {
@@ -17,6 +17,16 @@ RemoteClient::RemoteClient(const char* _host, int _port) {
     hBitmap = NULL;
     bitmapWidth = 0;
     bitmapHeight = 0;
+    recvScratch = NULL;
+    recvCap = 0;
+    decScratch = NULL;
+    decCap = 0;
+    lastChanged = false;
+    inputHead = 0;
+    inputCount = 0;
+    InitializeCriticalSection(&queueSection);
+    InitializeCriticalSection(&frameSection);
+    inputEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
 
     host = new char[strlen(_host) + 1];
     strcpy(host, _host);
@@ -33,8 +43,9 @@ RemoteClient::RemoteClient(const char* _host, int _port) {
 RemoteClient::~RemoteClient() {
     Disconnect();
     
-    // Zwolnij bufor (ImageData destruktor zwalnia pData)
+    /* Bity obrazu naleza do DIB, nie do ImageData. */
     if (pFrameBuffer) {
+        pFrameBuffer->pData = NULL;
         delete pFrameBuffer;
         pFrameBuffer = NULL;
     }
@@ -45,6 +56,21 @@ RemoteClient::~RemoteClient() {
         bitmapWidth = 0;
         bitmapHeight = 0;
     }
+
+    if (recvScratch) {
+        delete[] recvScratch;
+        recvScratch = NULL;
+    }
+    if (decScratch) {
+        delete[] decScratch;
+        decScratch = NULL;
+    }
+    if (inputEvent) {
+        CloseHandle(inputEvent);
+        inputEvent = NULL;
+    }
+    DeleteCriticalSection(&queueSection);
+    DeleteCriticalSection(&frameSection);
 
     if (host) {
         delete[] host;
@@ -108,6 +134,124 @@ bool RemoteClient::IsConnected() const {
     return (socket != INVALID_SOCKET);
 }
 
+void RemoteClient::LockFrame() {
+    EnterCriticalSection(&frameSection);
+}
+
+void RemoteClient::UnlockFrame() {
+    LeaveCriticalSection(&frameSection);
+}
+
+bool RemoteClient::GetLastDirty(int& x, int& y, int& w, int& h) const {
+    if (!lastChanged || !lastDirty.any) {
+        x = y = w = h = 0;
+        return false;
+    }
+    x = lastDirty.minX;
+    y = lastDirty.minY;
+    w = lastDirty.Width();
+    h = lastDirty.Height();
+    return true;
+}
+
+void RemoteClient::EnqueueInput(const RmInputEvent& ev) {
+    EnterCriticalSection(&queueSection);
+    if (!ev.isKey && ev.cmd == CMD_MOUSE_MOVE && inputCount > 0) {
+        int last = (inputHead + inputCount - 1) % RM_INPUT_QUEUE;
+        if (!inputQueue[last].isKey && inputQueue[last].cmd == CMD_MOUSE_MOVE) {
+            inputQueue[last].x = ev.x;
+            inputQueue[last].y = ev.y;
+            inputQueue[last].wheel = ev.wheel;
+            LeaveCriticalSection(&queueSection);
+            if (inputEvent)
+                SetEvent(inputEvent);
+            return;
+        }
+    }
+    if (inputCount >= RM_INPUT_QUEUE) {
+        inputHead = (inputHead + 1) % RM_INPUT_QUEUE;
+        inputCount--;
+    }
+    inputQueue[(inputHead + inputCount) % RM_INPUT_QUEUE] = ev;
+    inputCount++;
+    LeaveCriticalSection(&queueSection);
+    if (inputEvent)
+        SetEvent(inputEvent);
+}
+
+void RemoteClient::QueueMouse(int cmd, int x, int y, int wheel) {
+    RmInputEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.cmd = cmd;
+    ev.isKey = 0;
+    ev.x = x;
+    ev.y = y;
+    ev.wheel = wheel;
+    EnqueueInput(ev);
+}
+
+void RemoteClient::QueueKey(int cmd, WORD virtualKey, WORD scanCode, DWORD flags) {
+    RmInputEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.cmd = cmd;
+    ev.isKey = 1;
+    ev.virtualKey = virtualKey;
+    ev.scanCode = scanCode;
+    ev.flags = flags;
+    EnqueueInput(ev);
+}
+
+bool RemoteClient::HasPendingInput() {
+    EnterCriticalSection(&queueSection);
+    bool pending = (inputCount > 0);
+    LeaveCriticalSection(&queueSection);
+    return pending;
+}
+
+bool RemoteClient::FlushInput() {
+    RmInputEvent local[RM_INPUT_QUEUE];
+    int n = 0;
+    EnterCriticalSection(&queueSection);
+    n = inputCount;
+    for (int i = 0; i < n; i++)
+        local[i] = inputQueue[(inputHead + i) % RM_INPUT_QUEUE];
+    inputHead = 0;
+    inputCount = 0;
+    LeaveCriticalSection(&queueSection);
+
+    for (int i = 0; i < n; i++) {
+        FrameCmd cmd;
+        cmd.cmd = local[i].cmd;
+        if (local[i].isKey) {
+            DataKey key;
+            key.virtualKey = local[i].virtualKey;
+            key.scanCode = local[i].scanCode;
+            key.flags = local[i].flags;
+            if (!SendCommand(cmd, &key, sizeof(key)))
+                return false;
+        } else {
+            DataMouse mouse;
+            mouse.x = local[i].x;
+            mouse.y = local[i].y;
+            mouse.wheelDelta = local[i].wheel;
+            if (!SendCommand(cmd, &mouse, sizeof(mouse)))
+                return false;
+        }
+    }
+    return true;
+}
+
+char* RemoteClient::GrowScratch(char*& buf, int& cap, int need) {
+    if (need <= 0)
+        return NULL;
+    if (cap < need) {
+        delete[] buf;
+        buf = new char[need];
+        cap = need;
+    }
+    return buf;
+}
+
 void RemoteClient::SetDiffGrid(int blockW, int blockH) {
     diffBlockW = blockW;
     diffBlockH = blockH;
@@ -137,47 +281,67 @@ bool RemoteClient::HandleNoChangeFrame(const HeaderBmp& header, HBITMAP& result)
     return true;
 }
 
-// ===== ZAPEWNIENIE BUFORA (ALOKACJA/REALOKACJA) =====
+// ===== ZAPEWNIENIE BUFORA (DIB section, bity pisane w miejscu) =====
 bool RemoteClient::EnsureFrameBuffer(int width, int height, int bpp, int stride) {
-    DWORD newSize = stride * height;
-    
-    // Sprawdź czy trzeba realokować
-    bool needsRealloc = (! pFrameBuffer ||
-                         pFrameBuffer->width != width || 
-                         pFrameBuffer->height != height ||
-                         pFrameBuffer->bitsPerPixel != bpp ||
-                         pFrameBuffer->stride != stride);
-    
-    if (needsRealloc) {
-        // Zwolnij stary bufor
-        if (pFrameBuffer) {
-            delete pFrameBuffer;
-        }
-        
-        // Utwórz nowy
-        pFrameBuffer = new ImageData();
-        if (!pFrameBuffer) {
-            return false;
-        }
-        
-        pFrameBuffer->width = width;
-        pFrameBuffer->height = height;
-        pFrameBuffer->bitsPerPixel = bpp;
-        pFrameBuffer->stride = stride;
-        pFrameBuffer->dataSize = newSize;
-        pFrameBuffer->pData = new char[newSize];
-        pFrameBuffer->isFullFrame = true;
-        
-        if (!pFrameBuffer->pData) {
-            delete pFrameBuffer;
-            pFrameBuffer = NULL;
-            return false;
-        }
-        
-        // Wyzeruj bufor
-        memset(pFrameBuffer->pData, 0, newSize);
+    int canonical = ((width * bpp + 31) / 32) * 4;
+    if (stride <= 0)
+        stride = canonical;
+    if (stride != canonical)
+        return false;
+
+    if (pFrameBuffer && hBitmap &&
+        pFrameBuffer->width == width &&
+        pFrameBuffer->height == height &&
+        pFrameBuffer->bitsPerPixel == bpp &&
+        pFrameBuffer->stride == stride) {
+        return true;
     }
-    
+
+    if (hBitmap) {
+        DeleteObject(hBitmap);
+        hBitmap = NULL;
+    }
+    if (pFrameBuffer) {
+        pFrameBuffer->pData = NULL;
+        delete pFrameBuffer;
+        pFrameBuffer = NULL;
+    }
+
+    BITMAPINFO bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = (WORD)bpp;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    HDC hdc = GetDC(NULL);
+    if (!hdc)
+        return false;
+    void* bits = NULL;
+    hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    ReleaseDC(NULL, hdc);
+    if (!hBitmap || !bits) {
+        if (hBitmap) {
+            DeleteObject(hBitmap);
+            hBitmap = NULL;
+        }
+        return false;
+    }
+
+    DWORD newSize = (DWORD)stride * (DWORD)height;
+    pFrameBuffer = new ImageData();
+    pFrameBuffer->width = width;
+    pFrameBuffer->height = height;
+    pFrameBuffer->bitsPerPixel = bpp;
+    pFrameBuffer->stride = stride;
+    pFrameBuffer->dataSize = (long)newSize;
+    pFrameBuffer->pData = (char*)bits;
+    pFrameBuffer->isFullFrame = true;
+    memset(pFrameBuffer->pData, 0, newSize);
+    bitmapWidth = width;
+    bitmapHeight = height;
     return true;
 }
 
@@ -204,12 +368,19 @@ bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
             int dx, dy;
             memcpy(&dx, prefix, 4);
             memcpy(&dy, prefix + 4, 4);
-            if (!BmpStream::ApplyTranslationResidual(img, dx, dy, NULL, 0, 0, 0))
-                return false;
-            img->isFullFrame = false;
-            return true;
+            LockFrame();
+            bool ok = BmpStream::ApplyTranslationResidual(img, dx, dy, NULL, 0, 0, 0);
+            if (ok) {
+                img->isFullFrame = false;
+                lastDirty.SetFull(img->width, img->height);
+                lastChanged = true;
+            }
+            UnlockFrame();
+            return ok;
         }
         if (header.length != 0) return false;
+        lastChanged = false;
+        lastDirty.Clear();
         return true;
     }
 
@@ -220,11 +391,10 @@ bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
         return false;
     }
 
-    char* receivedBuffer = new char[header.length];
+    char* receivedBuffer = GrowScratch(recvScratch, recvCap, header.length);
     if (!receivedBuffer) return false;
 
     if (!SocketIo::RecvAll(socket, receivedBuffer, header.length)) {
-        delete[] receivedBuffer;
         Disconnect();
         return false;
     }
@@ -233,10 +403,8 @@ bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
     const char* payloadStart = receivedBuffer;
     int payloadLen = header.length;
     if (isTrans) {
-        if (payloadLen < 8) {
-            delete[] receivedBuffer;
+        if (payloadLen < 8)
             return false;
-        }
         memcpy(&transDx, payloadStart, 4);
         memcpy(&transDy, payloadStart + 4, 4);
         payloadStart += 8;
@@ -244,27 +412,27 @@ bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
     }
 
     if (!isFullFrame && isBlocks) {
-        if (!isCompressed) {
-            delete[] receivedBuffer;
+        if (!isCompressed)
             return false;
-        }
-        if (payloadLen < 4) {
-            delete[] receivedBuffer;
+        if (payloadLen < 4)
             return false;
+        LockFrame();
+        bool ok = true;
+        if (isTrans)
+            ok = BmpStream::ApplyTranslationResidual(img, transDx, transDy, NULL, 0, 0, 0);
+        FrameDirty blockDirty;
+        if (ok)
+            ok = BmpStream::ApplyPackedBlockDiffs(img, payloadStart, payloadLen, &blockDirty);
+        if (ok) {
+            img->isFullFrame = false;
+            if (isTrans)
+                lastDirty.SetFull(img->width, img->height);
+            else
+                lastDirty = blockDirty;
+            lastChanged = lastDirty.any;
         }
-        if (isTrans) {
-            if (!BmpStream::ApplyTranslationResidual(img, transDx, transDy, NULL, 0, 0, 0)) {
-                delete[] receivedBuffer;
-                return false;
-            }
-        }
-        if (!BmpStream::ApplyPackedBlockDiffs(img, payloadStart, payloadLen)) {
-            delete[] receivedBuffer;
-            return false;
-        }
-        img->isFullFrame = false;
-        delete[] receivedBuffer;
-        return true;
+        UnlockFrame();
+        return ok;
     }
 
     int expectedDataSize = (int)img->dataSize;
@@ -272,53 +440,51 @@ bool RemoteClient::ReceiveImageData(ImageData* img, const HeaderBmp& header) {
     char* workingBuffer = NULL;
     int workingSize = 0;
 
+    bool usedDecrypt = false;
     if (isCompressed) {
         int maxDecompressed = expectedDataSize + 4096;
-        workingBuffer = new char[maxDecompressed];
-        if (!workingBuffer) {
-            delete[] receivedBuffer;
+        workingBuffer = GrowScratch(decScratch, decCap, maxDecompressed);
+        if (!workingBuffer)
             return false;
-        }
+        usedDecrypt = true;
         Compression::decrypt(payloadStart, payloadLen, workingBuffer, workingSize);
-        if (workingSize != expectedDataSize) {
-            delete[] receivedBuffer;
-            delete[] workingBuffer;
+        if (workingSize != expectedDataSize)
             return false;
-        }
     } else {
         workingBuffer = (char*)payloadStart;
         workingSize = payloadLen;
-        if (workingSize != expectedDataSize) {
-            delete[] receivedBuffer;
+        if (workingSize != expectedDataSize)
             return false;
-        }
     }
+    (void)usedDecrypt;
 
+    LockFrame();
+    bool ok = true;
     if (isFullFrame) {
         memcpy(img->pData, workingBuffer, img->dataSize);
         img->isFullFrame = true;
+        lastDirty.SetFull(img->width, img->height);
+        lastChanged = true;
     } else {
         if (isTrans) {
-            if (!BmpStream::ApplyTranslationResidual(img, transDx, transDy,
-                    workingBuffer, img->stride, img->width, img->height)) {
-                delete[] receivedBuffer;
-                if (isCompressed) delete[] workingBuffer;
-                return false;
-            }
+            ok = BmpStream::ApplyTranslationResidual(img, transDx, transDy,
+                    workingBuffer, img->stride, img->width, img->height);
+            if (ok)
+                lastDirty.SetFull(img->width, img->height);
         } else {
-            if (!BmpStream::ApplyDiff(img->pData, img->stride, img->bitsPerPixel,
-                    workingBuffer, img->stride, img->width, img->height, 0, 0, false)) {
-                delete[] receivedBuffer;
-                if (isCompressed) delete[] workingBuffer;
-                return false;
-            }
+            FrameDirty xorDirty;
+            ok = BmpStream::ApplyDiff(img->pData, img->stride, img->bitsPerPixel,
+                    workingBuffer, img->stride, img->width, img->height, 0, 0, false, &xorDirty);
+            if (ok)
+                lastDirty = xorDirty;
         }
-        img->isFullFrame = false;
+        if (ok) {
+            img->isFullFrame = false;
+            lastChanged = lastDirty.any;
+        }
     }
-
-    delete[] receivedBuffer;
-    if (isCompressed) delete[] workingBuffer;
-    return true;
+    UnlockFrame();
+    return ok;
 }
 
 // ===== WYSYŁANIE KOMENDY =====
@@ -342,7 +508,14 @@ bool RemoteClient::SendCommand(const FrameCmd& cmd, const void* data, int dataSi
 }
 
 // ===== POBIERANIE BITMAPY (UPROSZCZONE) =====
-bool RemoteClient::FetchBitmap(HBITMAP& result) {
+bool RemoteClient::FetchBitmap(HBITMAP& result, bool* frameChanged) {
+    if (frameChanged)
+        *frameChanged = false;
+    lastChanged = false;
+
+    if (!FlushInput())
+        return false;
+
     if (diffGridDirty) {
         DataDiffGrid dg;
         dg.blockW = diffBlockW;
@@ -381,13 +554,19 @@ bool RemoteClient::FetchBitmap(HBITMAP& result) {
         bufHeight = pFrameBuffer->height;
     }
     int bufStride = (header.stride > 0) ? header.stride : ((bufWidth * header.bitsPerPixel + 31) / 32) * 4;
-    if (!EnsureFrameBuffer(bufWidth, bufHeight, header.bitsPerPixel, bufStride)) {
+    LockFrame();
+    bool bufferOk = EnsureFrameBuffer(bufWidth, bufHeight, header.bitsPerPixel, bufStride);
+    UnlockFrame();
+    if (!bufferOk) {
         return false;
     }
 
     if (HandleNoChangeFrame(header, result)) {
         remoteScreenWidth = pFrameBuffer->width;
         remoteScreenHeight = pFrameBuffer->height;
+        lastChanged = false;
+        if (frameChanged)
+            *frameChanged = false;
         return true;
     }
     
@@ -403,44 +582,14 @@ bool RemoteClient::FetchBitmap(HBITMAP& result) {
         return false;
     }
     result = hBitmap;
+    if (frameChanged)
+        *frameChanged = lastChanged;
     return true;
 }
 
-// ===== TWORZENIE LUB AKTUALIZACJA BITMAPY (REUSE via SetDIBits) =====
+// Bitmapa jest sekcja DIB wypelniana w ReceiveImageData. Tu tylko sprawdzamy, ze zyje.
 bool RemoteClient::CreateOrUpdateBitmap(const ImageData* img) {
-    if (!img || !img->pData || img->width <= 0 || img->height <= 0) {
+    if (!img || !img->pData || img->width <= 0 || img->height <= 0)
         return false;
-    }
-
-    BITMAPINFO bmi;
-    memset(&bmi, 0, sizeof(bmi));
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = img->width;
-    bmi.bmiHeader.biHeight = -img->height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = img->bitsPerPixel;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    HDC hdc = GetDC(NULL);
-    if (!hdc) return false;
-
-    if (hBitmap && bitmapWidth == img->width && bitmapHeight == img->height) {
-        int lines = SetDIBits(hdc, hBitmap, 0, img->height, img->pData, &bmi, DIB_RGB_COLORS);
-        ReleaseDC(NULL, hdc);
-        return (lines == img->height);
-    }
-
-    if (hBitmap) {
-        DeleteObject(hBitmap);
-        hBitmap = NULL;
-    }
-
-    hBitmap = CreateDIBitmap(hdc, &bmi.bmiHeader, CBM_INIT, img->pData, &bmi, DIB_RGB_COLORS);
-    ReleaseDC(NULL, hdc);
-
-    if (!hBitmap) return false;
-
-    bitmapWidth = img->width;
-    bitmapHeight = img->height;
-    return true;
+    return (hBitmap != NULL && bitmapWidth == img->width && bitmapHeight == img->height);
 }

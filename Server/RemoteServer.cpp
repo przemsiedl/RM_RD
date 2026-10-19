@@ -10,15 +10,17 @@ static int ClampDiffBlockDim(int v) {
 }
 
 // ===== KONSTRUKTOR =====
-RemoteServer::  RemoteServer(int _port) {
+RemoteServer::  RemoteServer(int _port, int bpp) {
     port = _port;
     listenSocket = INVALID_SOCKET;
     running = false;
     listenThread = NULL;
     listenThreadId = 0;
-    
-    // Utworz FrameProvider (24 bpp dla wydajnosci)
-    frameProvider = new FrameProvider(24);
+    if (bpp != 16 && bpp != 24 && bpp != 32)
+        bpp = 24;
+    captureBpp = bpp;
+
+    frameProvider = new FrameProvider(captureBpp);
     
     // Inicjalizacja sekcji krytycznej
     InitializeCriticalSection(&clientsSection);
@@ -168,7 +170,16 @@ bool RemoteServer::AcceptClient(ClientConnection* client) {
     client->diffBlockH = 32;
 
     client->pLastSentFrame = new ImageData();
-    if (!client->pLastSentFrame) {
+    client->pScratch = new ImageData();
+    if (!client->pLastSentFrame || !client->pScratch) {
+        if (client->pLastSentFrame) {
+            delete client->pLastSentFrame;
+            client->pLastSentFrame = NULL;
+        }
+        if (client->pScratch) {
+            delete client->pScratch;
+            client->pScratch = NULL;
+        }
         closesocket(client->socket);
         client->socket = INVALID_SOCKET;
         return false;
@@ -274,7 +285,7 @@ bool RemoteServer::ProcessSetDiffGrid(ClientConnection* client, const FrameCmd& 
 
 // ===== OBSŁUGA KOMENDY GET_FRAME =====
 bool RemoteServer::HandleGetFrame(ClientConnection* client) {
-    if (!client || !client->pLastSentFrame || !frameProvider) {
+    if (!client || !client->pLastSentFrame || !client->pScratch || !frameProvider) {
         return false;
     }
     DWORD now = GetTickCount();
@@ -284,7 +295,7 @@ bool RemoteServer::HandleGetFrame(ClientConnection* client) {
         Sleep(MIN_FRAME_INTERVAL_MS - elapsed);
     }
     FrameBmp frame;
-    if (!frameProvider->GetFrame(frame, client->pLastSentFrame,
+    if (!frameProvider->GetFrame(frame, client->pLastSentFrame, client->pScratch,
             client->diffBlockW, client->diffBlockH)) {
         return false;
     }
@@ -330,6 +341,10 @@ void RemoteServer::DisconnectClient(ClientConnection* client) {
         if (client->pLastSentFrame) {
             delete client->pLastSentFrame;
             client->pLastSentFrame = NULL;
+        }
+        if (client->pScratch) {
+            delete client->pScratch;
+            client->pScratch = NULL;
         }
 
         if (client->socket != INVALID_SOCKET) {

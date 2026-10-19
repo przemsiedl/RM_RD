@@ -1,6 +1,7 @@
-#include "..\Shared\BmpStream.h"
-#include "..\Shared\compression.h"
+#include "../Shared/BmpStream.h"
+#include "../Shared/compression.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* VC6 / starsze Win32: brak typu long long (C99) — SSD na __int64 */
 typedef __int64 BmpSsdAcc;
@@ -10,9 +11,17 @@ BmpStream::BmpStream(int bpp) :
     pPrevious(NULL),
     pCurrent(NULL),
     pDiff(NULL),
-    bitsPerPixel(bpp)
+    bitsPerPixel(bpp),
+    cachedScreenDC(NULL),
+    cachedMemDC(NULL),
+    cachedDib(NULL),
+    cachedOldBmp(NULL),
+    cachedBits(NULL),
+    cachedW(0),
+    cachedH(0),
+    cachedBpp(0)
 {
-    if(bitsPerPixel != 24 && bitsPerPixel != 32)
+    if (bitsPerPixel != 16 && bitsPerPixel != 24 && bitsPerPixel != 32)
     {
         bitsPerPixel = 24;
     }
@@ -20,6 +29,7 @@ BmpStream::BmpStream(int bpp) :
 
 BmpStream::~BmpStream()
 {
+    ReleaseSurface();
     if(pPrevious)
     {
         delete pPrevious;
@@ -32,6 +42,111 @@ BmpStream::~BmpStream()
     {
         delete pDiff;
     }
+}
+
+void BmpStream::ReleaseSurface()
+{
+    if (cachedMemDC && cachedOldBmp)
+    {
+        SelectObject(cachedMemDC, cachedOldBmp);
+        cachedOldBmp = NULL;
+    }
+    if (cachedDib)
+    {
+        DeleteObject(cachedDib);
+        cachedDib = NULL;
+    }
+    if (cachedMemDC)
+    {
+        DeleteDC(cachedMemDC);
+        cachedMemDC = NULL;
+    }
+    if (cachedScreenDC)
+    {
+        ReleaseDC(NULL, cachedScreenDC);
+        cachedScreenDC = NULL;
+    }
+    cachedBits = NULL;
+    cachedW = 0;
+    cachedH = 0;
+    cachedBpp = 0;
+}
+
+bool BmpStream::EnsureSurface(int screenWidth, int screenHeight)
+{
+    if (cachedDib && cachedBits && cachedW == screenWidth && cachedH == screenHeight &&
+        cachedBpp == bitsPerPixel)
+    {
+        return true;
+    }
+
+    ReleaseSurface();
+
+    cachedScreenDC = GetDC(NULL);
+    if (!cachedScreenDC)
+        return false;
+
+    cachedMemDC = CreateCompatibleDC(cachedScreenDC);
+    if (!cachedMemDC)
+    {
+        ReleaseSurface();
+        return false;
+    }
+
+    BITMAPINFO bmi;
+    ZeroMemory(&bmi, sizeof(BITMAPINFO));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = screenWidth;
+    bmi.bmiHeader.biHeight = -screenHeight;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = (WORD)bitsPerPixel;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    cachedDib = CreateDIBSection(cachedMemDC, &bmi, DIB_RGB_COLORS, &cachedBits, NULL, 0);
+    if (!cachedDib || !cachedBits)
+    {
+        ReleaseSurface();
+        return false;
+    }
+
+    cachedOldBmp = (HBITMAP)SelectObject(cachedMemDC, cachedDib);
+    cachedW = screenWidth;
+    cachedH = screenHeight;
+    cachedBpp = bitsPerPixel;
+    return true;
+}
+
+static bool EnsureImageBuffer(ImageData*& img, int w, int h, int bpp, int stride, long dataSize)
+{
+    if (img && img->pData && img->width == w && img->height == h &&
+        img->bitsPerPixel == bpp && img->stride == stride && img->dataSize == dataSize)
+    {
+        return true;
+    }
+
+    if (img)
+    {
+        delete img;
+        img = NULL;
+    }
+
+    img = new ImageData();
+    img->width = w;
+    img->height = h;
+    img->bitsPerPixel = bpp;
+    img->stride = stride;
+    img->dataSize = dataSize;
+    img->pData = new char[dataSize];
+    img->isFullFrame = true;
+    img->isEmptyDiff = false;
+    if (!img->pData)
+    {
+        delete img;
+        img = NULL;
+        return false;
+    }
+    memset(img->pData, 0, (size_t)dataSize);
+    return true;
 }
 
 void BmpStream::Reset()
@@ -53,85 +168,51 @@ void BmpStream::Reset()
     }
 }
 
-void BmpStream::Capture()
+bool BmpStream::Capture()
 {
-    if (pPrevious)
-    {
-        delete pPrevious;
-    }
-
-    pPrevious = pCurrent;
-    pCurrent = NULL;
-
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    if (screenWidth <= 0 || screenHeight <= 0)
+        return false;
+    if (!EnsureSurface(screenWidth, screenHeight))
+        return false;
 
-    HDC hScreenDC = GetDC(NULL);
-    if(!hScreenDC)
+    if (!BitBlt(cachedMemDC, 0, 0, screenWidth, screenHeight, cachedScreenDC, 0, 0, SRCCOPY))
+        return false;
+
+    int stride = ((screenWidth * bitsPerPixel + 31) / 32) * 4;
+    long dataSize = (long)stride * screenHeight;
+
+    bool resized = (pCurrent && (pCurrent->width != screenWidth ||
+        pCurrent->height != screenHeight || pCurrent->bitsPerPixel != bitsPerPixel));
+    if (resized)
     {
-        return;
+        if (pPrevious)
+        {
+            delete pPrevious;
+            pPrevious = NULL;
+        }
+        if (pCurrent)
+        {
+            delete pCurrent;
+            pCurrent = NULL;
+        }
     }
 
-    HDC hMemDC = CreateCompatibleDC(hScreenDC);
-    if(!hMemDC)
-    {
-        ReleaseDC(NULL, hScreenDC);
-        return;
-    }
+    /* Nadpisujemy bufor poprzedniej-poprzedniej klatki, potem zamieniamy wskazniki. */
+    ImageData* spare = pPrevious;
+    pPrevious = NULL;
+    if (!EnsureImageBuffer(spare, screenWidth, screenHeight, bitsPerPixel, stride, dataSize))
+        return false;
 
-    BITMAPINFO bmi;
-    ZeroMemory(&bmi, sizeof(BITMAPINFO));
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = screenWidth;
-    bmi.bmiHeader.biHeight = -screenHeight;  // ujemna = top-down DIB
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = bitsPerPixel;
-    bmi.bmiHeader.biCompression = BI_RGB;
+    CopyMemory(spare->pData, cachedBits, (size_t)dataSize);
+    spare->isFullFrame = true;
+    spare->isEmptyDiff = false;
 
-    char* pDibData = NULL;
-    HBITMAP hDib = CreateDIBSection(hMemDC,
-                                    &bmi,
-                                    DIB_RGB_COLORS,
-                                    (void**)&pDibData,
-                                    NULL,
-                                    0);
-    if (!hDib || !pDibData)
-    {
-        DeleteDC(hMemDC);
-        ReleaseDC(NULL, hScreenDC);
-        return;
-    }
-
-    HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hDib);
-
-    BitBlt( hMemDC,
-            0,
-            0,
-            screenWidth,
-            screenHeight,
-            hScreenDC,
-            0,
-            0,
-            SRCCOPY);
-           
-    int stride = ((screenWidth * bitsPerPixel + 31) / 32) * 4;  // wyrównanie do 4 bajtów
-    long dataSize = stride * screenHeight;
-
-    pCurrent = new ImageData();
-    pCurrent->width = screenWidth;
-    pCurrent->height = screenHeight;
-    pCurrent->bitsPerPixel = bitsPerPixel;
-    pCurrent->stride = stride;
-    pCurrent->dataSize = dataSize;
-    pCurrent->pData = new char[dataSize];
-    pCurrent->isFullFrame = true;
-
-    CopyMemory(pCurrent->pData, pDibData, dataSize);
-
-    SelectObject(hMemDC, hOldBmp);
-    DeleteObject(hDib);
-    DeleteDC(hMemDC);
-    ReleaseDC(NULL, hScreenDC);
+    ImageData* oldCurrent = pCurrent;
+    pCurrent = spare;
+    pPrevious = oldCurrent;
+    return true;
 }
 
 bool BmpStream::CalcDiff(int x, int y, int w, int h)
@@ -188,13 +269,83 @@ bool BmpStream::CalcDiff(int x, int y, int w, int h)
     return anyDiff;
 }
 
+static unsigned int LoadU32(const char* p)
+{
+    unsigned int v;
+    memcpy(&v, p, 4);
+    return v;
+}
+
+static void StoreU32(char* p, unsigned int v)
+{
+    memcpy(p, &v, 4);
+}
+
+/* XOR wiersza po 4 bajty (memcpy, bez lamania aliasowania). Zwraca pierwszy i ostatni zmieniony bajt. */
+static void XorApplyRow(char* dst, const char* src, int nbytes, int* outFirst, int* outLast)
+{
+    int first = -1;
+    int last = -1;
+    int i = 0;
+    int n4 = nbytes >> 2;
+    for (int k = 0; k < n4; k++)
+    {
+        unsigned int v = LoadU32(src + i);
+        if (v)
+        {
+            if (first < 0) first = i;
+            last = i + 3;
+            StoreU32(dst + i, LoadU32(dst + i) ^ v);
+        }
+        i += 4;
+    }
+    while (i < nbytes)
+    {
+        unsigned char sv = (unsigned char)src[i];
+        if (sv)
+        {
+            if (first < 0) first = i;
+            last = i;
+            dst[i] = (char)((unsigned char)dst[i] ^ sv);
+        }
+        i++;
+    }
+    if (last >= nbytes)
+        last = nbytes - 1;
+    if (outFirst) *outFirst = first;
+    if (outLast) *outLast = last;
+}
+
+static bool XorStoreRow(char* dst, const char* a, const char* b, int nbytes)
+{
+    bool any = false;
+    int i = 0;
+    int n4 = nbytes >> 2;
+    for (int k = 0; k < n4; k++)
+    {
+        unsigned int v = LoadU32(a + i) ^ LoadU32(b + i);
+        StoreU32(dst + i, v);
+        if (v) any = true;
+        i += 4;
+    }
+    while (i < nbytes)
+    {
+        unsigned char v = (unsigned char)((unsigned char)a[i] ^ (unsigned char)b[i]);
+        dst[i] = (char)v;
+        if (v) any = true;
+        i++;
+    }
+    return any;
+}
+
 bool BmpStream::ApplyDiff(char* target, int targetStride, int targetBpp,
     const char* diffData, int diffStride, int diffWidth, int diffHeight,
-    int targetX, int targetY, bool isFullFrame)
+    int targetX, int targetY, bool isFullFrame, FrameDirty* dirty)
 {
     if (!target || !diffData || diffWidth <= 0 || diffHeight <= 0) return false;
 
     int bytesPerPixel = targetBpp / 8;
+    if (bytesPerPixel <= 0) return false;
 
     if (isFullFrame)
     {
@@ -205,22 +356,44 @@ bool BmpStream::ApplyDiff(char* target, int targetStride, int targetBpp,
             const char* pDiffRow = diffData + (y * diffStride);
             CopyMemory(pTargetRow, pDiffRow, rowBytes);
         }
+        if (dirty)
+            dirty->SetFull(diffWidth, diffHeight);
         return true;
     }
+
+    int rowBytes = diffWidth * bytesPerPixel;
+    bool any = false;
+    int minX = diffWidth;
+    int maxX = -1;
+    int minY = diffHeight;
+    int maxY = -1;
 
     for (int y = 0; y < diffHeight; y++)
     {
         char* pTargetRow = target + ((targetY + y) * targetStride) + (targetX * bytesPerPixel);
         const char* pDiffRow = diffData + (y * diffStride);
-
-        for (int x = 0; x < diffWidth; x++)
+        int first = -1;
+        int last = -1;
+        XorApplyRow(pTargetRow, pDiffRow, rowBytes, &first, &last);
+        if (first >= 0)
         {
-            int offset = x * bytesPerPixel;
-            for (int i = 0; i < bytesPerPixel; i++)
-            {
-                pTargetRow[offset + i] ^= pDiffRow[offset + i];
-            }
+            any = true;
+            int x0 = first / bytesPerPixel;
+            int x1 = last / bytesPerPixel;
+            if (x1 >= diffWidth) x1 = diffWidth - 1;
+            if (x0 < minX) minX = x0;
+            if (x1 > maxX) maxX = x1;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
         }
+    }
+
+    if (dirty)
+    {
+        if (!any)
+            dirty->Clear();
+        else
+            dirty->Add(targetX + minX, targetY + minY, maxX - minX + 1, maxY - minY + 1);
     }
     return true;
 }
@@ -254,23 +427,22 @@ bool BmpStream::ComputeDiff(const ImageData* current, const ImageData* previous,
         return true;
     }
 
-    ZeroMemory(outDiff->pData, outDiff->dataSize);
     int bytesPerPixel = current->bitsPerPixel / 8;
     bool anyDiff = false;
+    bool fullCover = (rx == 0 && ry == 0 && rw == current->width && rh == current->height);
+    if (!fullCover)
+        ZeroMemory(outDiff->pData, outDiff->dataSize);
 
+    int pixelBytes = rw * bytesPerPixel;
     for (int py = ry; py < ry + rh; py++) {
-        char* pCurrRow = current->pData + (py * current->stride);
-        char* pPrevRow = previous->pData + (py * previous->stride);
-        char* pDiffRow = outDiff->pData + (py * outDiff->stride);
-
-        for (int px = rx; px < rx + rw; px++) {
-            int offset = px * bytesPerPixel;
-            for (int i = 0; i < bytesPerPixel; i++) {
-                char value = pCurrRow[offset + i] ^ pPrevRow[offset + i];
-                pDiffRow[offset + i] = value;
-                if (value != 0) anyDiff = true;
-            }
-        }
+        char* pCurrRow = current->pData + (py * current->stride) + (rx * bytesPerPixel);
+        char* pPrevRow = previous->pData + (py * previous->stride) + (rx * bytesPerPixel);
+        char* pDiffRow = outDiff->pData + (py * outDiff->stride) + (rx * bytesPerPixel);
+        if (XorStoreRow(pDiffRow, pCurrRow, pPrevRow, pixelBytes))
+            anyDiff = true;
+        int pad = outDiff->stride - (rx * bytesPerPixel + pixelBytes);
+        if (fullCover && pad > 0)
+            memset(pDiffRow + pixelBytes, 0, (size_t)pad);
     }
 
     outDiff->isEmptyDiff = !anyDiff;
@@ -473,9 +645,12 @@ bool BmpStream::PackDiffAsBlocks(const ImageData* diff, int blockW, int blockH,
     return true;
 }
 
-bool BmpStream::ApplyPackedBlockDiffs(ImageData* img, const char* payload, int payloadLen) {
+bool BmpStream::ApplyPackedBlockDiffs(ImageData* img, const char* payload, int payloadLen,
+    FrameDirty* dirty) {
     if (!img || !img->pData || !payload || payloadLen < 4)
         return false;
+    if (dirty)
+        dirty->Clear();
 
     const char* p = payload;
     const char* end = payload + payloadLen;
@@ -485,9 +660,14 @@ bool BmpStream::ApplyPackedBlockDiffs(ImageData* img, const char* payload, int p
     if (n <= 0 || n > 65536)
         return false;
 
+    char* dec = NULL;
+    int decCap = 0;
+
     for (int i = 0; i < n; i++) {
-        if (p + 20 > end)
+        if (p + 20 > end) {
+            free(dec);
             return false;
+        }
         int x, y, w, h, clen;
         memcpy(&x, p, 4);
         p += 4;
@@ -499,18 +679,28 @@ bool BmpStream::ApplyPackedBlockDiffs(ImageData* img, const char* payload, int p
         p += 4;
         memcpy(&clen, p, 4);
         p += 4;
-        if (clen < 0 || p + clen > end)
+        if (clen < 0 || p + clen > end) {
+            free(dec);
             return false;
-        if (w <= 0 || h <= 0)
+        }
+        if (w <= 0 || h <= 0) {
+            free(dec);
             return false;
-        if (x < 0 || y < 0 || x + w > img->width || y + h > img->height)
+        }
+        if (x < 0 || y < 0 || x + w > img->width || y + h > img->height) {
+            free(dec);
             return false;
+        }
 
         int bpp = img->bitsPerPixel / 8;
         int regionStride = ((w * bpp + 3) / 4) * 4;
         int expSize = regionStride * h;
         int maxDec = expSize + 4096;
-        char* dec = (char*)malloc((size_t)maxDec);
+        if (decCap < maxDec) {
+            free(dec);
+            dec = (char*)malloc((size_t)maxDec);
+            decCap = dec ? maxDec : 0;
+        }
         if (!dec)
             return false;
         int dlen = 0;
@@ -520,15 +710,237 @@ bool BmpStream::ApplyPackedBlockDiffs(ImageData* img, const char* payload, int p
             return false;
         }
         if (!ApplyDiff(img->pData, img->stride, img->bitsPerPixel,
-                dec, regionStride, w, h, x, y, false)) {
+                dec, regionStride, w, h, x, y, false, NULL)) {
             free(dec);
             return false;
         }
-        free(dec);
+        if (dirty)
+            dirty->Add(x, y, w, h);
+        p += clen;
+    }
+    free(dec);
+
+    return (p == end);
+}
+
+static bool BlockPixelsEqual(const ImageData* a, const ImageData* b, int x, int y, int w, int h)
+{
+    int bpp = a->bitsPerPixel / 8;
+    int n = w * bpp;
+    for (int row = 0; row < h; row++)
+    {
+        const char* ra = a->pData + (y + row) * a->stride + x * bpp;
+        const char* rb = b->pData + (y + row) * b->stride + x * bpp;
+        if (memcmp(ra, rb, (size_t)n) != 0)
+            return false;
+    }
+    return true;
+}
+
+static bool SameGeometry(const ImageData* a, const ImageData* b)
+{
+    return a && b && a->pData && b->pData &&
+        a->width == b->width && a->height == b->height &&
+        a->stride == b->stride && a->bitsPerPixel == b->bitsPerPixel &&
+        a->width > 0 && a->height > 0;
+}
+
+float BmpStream::MeasureDirtyRatio(const ImageData* current, const ImageData* previous,
+    int blockW, int blockH)
+{
+    if (!current || !current->pData || current->width <= 0 || current->height <= 0)
+        return 1.0f;
+    if (!previous || !previous->pData ||
+        previous->width != current->width || previous->height != current->height ||
+        previous->bitsPerPixel != current->bitsPerPixel || previous->stride != current->stride)
+        return 1.0f;
+    if (blockW < 1) blockW = 32;
+    if (blockH < 1) blockH = 32;
+
+    long total = (long)current->width * current->height;
+    if (total <= 0)
+        return 1.0f;
+
+    int cols = (current->width + blockW - 1) / blockW;
+    int rows = (current->height + blockH - 1) / blockH;
+    long dirty = 0;
+    long limit = (long)(total * 0.70f);
+    if (limit < 1) limit = 1;
+
+    for (int ri = 0; ri < rows; ri++)
+    {
+        for (int ci = 0; ci < cols; ci++)
+        {
+            int bx = ci * blockW;
+            int by = ri * blockH;
+            int bw = MinInt(blockW, current->width - bx);
+            int bh = MinInt(blockH, current->height - by);
+            if (bw <= 0 || bh <= 0)
+                continue;
+            if (BlockPixelsEqual(current, previous, bx, by, bw, bh))
+                continue;
+            dirty += (long)bw * bh;
+            if (dirty >= limit)
+                return 1.0f;
+        }
+    }
+
+    if (dirty <= 0)
+        return 0.0f;
+    return (float)dirty / (float)total;
+}
+
+int BmpStream::PackChangedBlocks(const ImageData* current, const ImageData* previous,
+    int blockW, int blockH, float maxDirtyAreaRatio, char** outBuf, int* outLen)
+{
+    if (outBuf) *outBuf = NULL;
+    if (outLen) *outLen = 0;
+    if (!outBuf || !outLen || !SameGeometry(current, previous))
+        return BLOCK_PACK_ERROR;
+    if (blockW <= 0 || blockH <= 0 || maxDirtyAreaRatio <= 0.0f || maxDirtyAreaRatio > 1.0f)
+        return BLOCK_PACK_ERROR;
+
+    int bpp = current->bitsPerPixel / 8;
+    long totalPixels = (long)current->width * current->height;
+    int cols = (current->width + blockW - 1) / blockW;
+    int rows = (current->height + blockH - 1) / blockH;
+    int maxBlocks = cols * rows;
+    if (maxBlocks <= 0)
+        return BLOCK_PACK_ERROR;
+
+    typedef struct {
+        int x, y, w, h;
+    } Cell;
+    Cell* cells = (Cell*)malloc((size_t)maxBlocks * sizeof(Cell));
+    if (!cells)
+        return BLOCK_PACK_ERROR;
+
+    long dirtyPixels = 0;
+    int nCells = 0;
+    long limitPixels = (long)((float)totalPixels * maxDirtyAreaRatio);
+
+    for (int ri = 0; ri < rows; ri++)
+    {
+        for (int ci = 0; ci < cols; ci++)
+        {
+            int bx = ci * blockW;
+            int by = ri * blockH;
+            int bw = MinInt(blockW, current->width - bx);
+            int bh = MinInt(blockH, current->height - by);
+            if (bw <= 0 || bh <= 0)
+                continue;
+            if (BlockPixelsEqual(current, previous, bx, by, bw, bh))
+                continue;
+            cells[nCells].x = bx;
+            cells[nCells].y = by;
+            cells[nCells].w = bw;
+            cells[nCells].h = bh;
+            dirtyPixels += (long)bw * bh;
+            nCells++;
+            if (dirtyPixels >= limitPixels)
+            {
+                free(cells);
+                return BLOCK_PACK_TOO_MUCH;
+            }
+        }
+    }
+
+    if (nCells == 0)
+    {
+        free(cells);
+        return BLOCK_PACK_NOCHANGE;
+    }
+    /* Duza liczba bloczkow zjada RAM na slabych maszynach — wtedy taniej jeden XOR. */
+    if (nCells > 400)
+    {
+        free(cells);
+        return BLOCK_PACK_TOO_MUCH;
+    }
+
+    int maxBlockPlain = 0;
+    int estimated = 4;
+    for (int i = 0; i < nCells; i++)
+    {
+        int rs = ((cells[i].w * bpp + 3) / 4) * 4;
+        int plainBlock = rs * cells[i].h;
+        if (plainBlock > maxBlockPlain)
+            maxBlockPlain = plainBlock;
+        estimated += 20 + plainBlock * 2 + 4096;
+    }
+
+    char* out = new char[estimated];
+    char* scratch = (char*)malloc((size_t)maxBlockPlain);
+    char* comp = (char*)malloc((size_t)(maxBlockPlain * 2 + 4096));
+    if (!scratch || !comp)
+    {
+        delete[] out;
+        free(scratch);
+        free(comp);
+        free(cells);
+        return BLOCK_PACK_ERROR;
+    }
+
+    char* p = out;
+    memcpy(p, &nCells, 4);
+    p += 4;
+
+    for (int i = 0; i < nCells; i++)
+    {
+        int x = cells[i].x;
+        int y = cells[i].y;
+        int w = cells[i].w;
+        int h = cells[i].h;
+        int rs = ((w * bpp + 3) / 4) * 4;
+        int plain = rs * h;
+        int rowBytes = w * bpp;
+        for (int row = 0; row < h; row++)
+        {
+            const char* cRow = current->pData + (y + row) * current->stride + x * bpp;
+            const char* pRow = previous->pData + (y + row) * previous->stride + x * bpp;
+            char* dRow = scratch + row * rs;
+            XorStoreRow(dRow, cRow, pRow, rowBytes);
+            if (rs > rowBytes)
+                memset(dRow + rowBytes, 0, (size_t)(rs - rowBytes));
+        }
+        int clen = 0;
+        int cap = plain * 2 + 4096;
+        Compression::encrypt(scratch, plain, comp, clen, cap);
+        if (clen <= 0)
+        {
+            delete[] out;
+            free(scratch);
+            free(comp);
+            free(cells);
+            return BLOCK_PACK_ERROR;
+        }
+        if ((p - out) + 20 + clen > estimated)
+        {
+            delete[] out;
+            free(scratch);
+            free(comp);
+            free(cells);
+            return BLOCK_PACK_ERROR;
+        }
+        memcpy(p, &x, 4);
+        p += 4;
+        memcpy(p, &y, 4);
+        p += 4;
+        memcpy(p, &w, 4);
+        p += 4;
+        memcpy(p, &h, 4);
+        p += 4;
+        memcpy(p, &clen, 4);
+        p += 4;
+        memcpy(p, comp, (size_t)clen);
         p += clen;
     }
 
-    return (p == end);
+    free(scratch);
+    free(comp);
+    free(cells);
+    *outLen = (int)(p - out);
+    *outBuf = out;
+    return BLOCK_PACK_OK;
 }
 
 /* --- Global translation (motion) --- */
@@ -556,12 +968,23 @@ static int CountNonzeroDiffPixels(const ImageData* d) {
     return c;
 }
 
+static int PixelLuma16(const char* p)
+{
+    unsigned short pix = (unsigned short)((unsigned char)p[0] | ((unsigned char)p[1] << 8));
+    int b = pix & 31;
+    int g = (pix >> 5) & 31;
+    int r = (pix >> 10) & 31;
+    return (r + g + b) * 255 / 93;
+}
+
 static unsigned char* DownsampleGray(const ImageData* img, int scale, int* outW, int* outH) {
     int w = img->width;
     int h = img->height;
     int wS = (w + scale - 1) / scale;
     int hS = (h + scale - 1) / scale;
     int bpp = img->bitsPerPixel / 8;
+    if (bpp < 1)
+        bpp = 1;
     unsigned char* buf = (unsigned char*)malloc((size_t)wS * (size_t)hS);
     if (!buf)
         return NULL;
@@ -574,8 +997,16 @@ static unsigned char* DownsampleGray(const ImageData* img, int scale, int* outW,
             for (int tdy = 0; tdy < scale && y0 + tdy < h; tdy++) {
                 for (int tdx = 0; tdx < scale && x0 + tdx < w; tdx++) {
                     const char* p = img->pData + (y0 + tdy) * img->stride + (x0 + tdx) * bpp;
-                    sum += (unsigned char)p[0] + (unsigned char)p[1] + (unsigned char)p[2];
-                    cnt += 3;
+                    if (bpp >= 3) {
+                        sum += (unsigned char)p[0] + (unsigned char)p[1] + (unsigned char)p[2];
+                        cnt += 3;
+                    } else if (bpp == 2) {
+                        sum += PixelLuma16(p);
+                        cnt++;
+                    } else {
+                        sum += (unsigned char)p[0];
+                        cnt++;
+                    }
                 }
             }
             buf[ys * wS + xs] = cnt ? (unsigned char)(sum / cnt) : 0;
@@ -586,26 +1017,31 @@ static unsigned char* DownsampleGray(const ImageData* img, int scale, int* outW,
     return buf;
 }
 
+/* Sredni SSD tylko na nakladajacych sie pikselach. Maly wspolny obszar odpada,
+   zeby czarny rog nie wygral z prawdziwym przesunieciem. */
 static BmpSsdAcc SsdGrayOffset(const unsigned char* cur, int w, int h,
     const unsigned char* prev, int pw, int ph, int dx, int dy) {
     BmpSsdAcc s = 0;
+    int count = 0;
     for (int y = 0; y < h; y++) {
         int sy = y - dy;
-        if (sy < 0 || sy >= ph) {
-            s += (BmpSsdAcc)255 * 255 * w;
+        if (sy < 0 || sy >= ph)
             continue;
-        }
         for (int x = 0; x < w; x++) {
             int sx = x - dx;
             if (sx < 0 || sx >= pw)
-                s += (BmpSsdAcc)255 * 255;
-            else {
-                int d = (int)cur[y * w + x] - (int)prev[sy * pw + sx];
-                s += (BmpSsdAcc)d * d;
-            }
+                continue;
+            int d = (int)cur[y * w + x] - (int)prev[sy * pw + sx];
+            s += (BmpSsdAcc)d * d;
+            count++;
         }
     }
-    return s;
+    int need = (w * h) / 2;
+    if (need < 1)
+        need = 1;
+    if (count < need)
+        return BMP_SSD_HUGE;
+    return s / count;
 }
 
 static BmpSsdAcc SparseSsdBgr(const ImageData* c, const ImageData* p, int dx, int dy, int step) {
@@ -613,31 +1049,36 @@ static BmpSsdAcc SparseSsdBgr(const ImageData* c, const ImageData* p, int dx, in
     int h = c->height;
     int bpp = c->bitsPerPixel / 8;
     BmpSsdAcc s = 0;
+    int count = 0;
     if (step < 1)
         step = 1;
     for (int y = 0; y < h; y += step) {
         int sy = y - dy;
-        if (sy < 0 || sy >= h) {
-            s += (BmpSsdAcc)255 * 255 * bpp * ((w + step - 1) / step);
+        if (sy < 0 || sy >= h)
             continue;
-        }
         const char* rowC = c->pData + y * c->stride;
         const char* rowP = p->pData + sy * p->stride;
         for (int x = 0; x < w; x += step) {
             int sx = x - dx;
-            if (sx < 0 || sx >= w) {
-                s += (BmpSsdAcc)255 * 255 * bpp;
+            if (sx < 0 || sx >= w)
                 continue;
-            }
             int oc = x * bpp;
             int os = sx * bpp;
-            for (int k = 0; k < bpp; k++) {
+            for (int k = 0; k < bpp && k < 3; k++) {
                 int d = (unsigned char)rowC[oc + k] - (unsigned char)rowP[os + k];
                 s += (BmpSsdAcc)d * d;
             }
+            count++;
         }
     }
-    return s;
+    int samplesX = (w + step - 1) / step;
+    int samplesY = (h + step - 1) / step;
+    int need = (samplesX * samplesY) / 2;
+    if (need < 1)
+        need = 1;
+    if (count < need)
+        return BMP_SSD_HUGE;
+    return s / count;
 }
 
 bool BmpStream::TryGlobalTranslationDiff(const ImageData* current, const ImageData* previous,
